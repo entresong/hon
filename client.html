@@ -139,7 +139,8 @@ const effects = []; // {kind, id, start, level}
 
 // ===== 캐릭터 애니메이션 상태 (클라 표현 전용, 서버 무관) =====
 const SWING_MS=280, HURT_MS=320, HIT_MS=200, ATTACK_CD=600, ATK_RANGE=46;
-const walkInfo=new Map(), face=new Map(), swingFx=new Map(), hurtFx=new Map(), monFx=new Map();
+const DEATH_MS=400;   // 사망 연출 길이. 서버 DEATH_MS(440)보다 작게 유지해야 제거 전에 연출이 끝난다
+const walkInfo=new Map(), face=new Map(), swingFx=new Map(), hurtFx=new Map(), monFx=new Map(), deathFx=new Map();
 let myLastSwing=0;
 function prune(map, ids){ for(const k of map.keys()) if(!ids.has(k)) map.delete(k); }
 
@@ -234,7 +235,7 @@ function enter(){
       }
       // 사라진 개체의 애니메이션 상태 정리 (메모리 누수 방지)
       const pids=new Set(m.players.map(p=>p.id)), mids=new Set(m.monsters.map(o=>o.id));
-      prune(walkInfo,pids); prune(face,pids); prune(swingFx,pids); prune(hurtFx,pids); prune(monFx,mids);
+      prune(walkInfo,pids); prune(face,pids); prune(swingFx,pids); prune(hurtFx,pids); prune(monFx,mids); prune(deathFx,mids);
       const sp = m.players.find(p => p.id === myId);
       if(sp){
         document.getElementById('lv').textContent = sp.level;
@@ -245,7 +246,13 @@ function enter(){
         document.getElementById('expf').style.transform = 'scaleX('+Math.min(1,sp.exp/sp.expNeed)+')';
         document.getElementById('expt').textContent = 'EXP '+sp.exp+' / '+sp.expNeed;
         if(!me.known){ me.x=sp.x; me.y=sp.y; me.known=true; }
-        else { me.x += (sp.x-me.x)*0.18; me.y += (sp.y-me.y)*0.18; }
+        else {
+          // 예측 위치와 서버 위치의 보정: 작은 어긋남은 무시(데드밴드)해 좌우 진동을 없애고,
+          // 크게 벌어졌을 때만 부드럽게 수렴(아주 크면 즉시 스냅)
+          const dx=sp.x-me.x, dy=sp.y-me.y, dd=Math.hypot(dx,dy);
+          if(dd > 90){ me.x=sp.x; me.y=sp.y; }
+          else if(dd > 6){ me.x += dx*0.16; me.y += dy*0.16; }
+        }
         if(sp.dead){ me.tx=me.ty=null; me.attackId=null; }
       }
     }
@@ -276,6 +283,7 @@ cv.addEventListener('pointerdown', e => {
     if(Math.hypot(wx-d.x, wy-d.y) < 22){ ws.send(JSON.stringify({ t:'pickup', id:d.id })); return; }
   }
   for(const mo of currState.monsters){
+    if(mo.dying) continue;   // 죽어가는 요괴는 겨냥 불가
     const r = mo.boss ? 40 : 24;
     if(Math.hypot(wx-mo.x, wy-mo.y) < r){ me.tx=me.ty=null; me.attackId=mo.id; ws.send(JSON.stringify({ t:'attack', id:mo.id })); return; }
   }
@@ -297,6 +305,13 @@ function update(dt){
     const d = Math.hypot(me.tx-me.x, me.ty-me.y);
     if(d > 4){ me.x += (me.tx-me.x)/d*SPEED*dt; me.y += (me.ty-me.y)/d*SPEED*dt; }
     else me.tx = me.ty = null;
+  } else if(me.attackId && currState){
+    // 공격 접근도 서버처럼 예측 이동: 안 그러면 데드밴드 보정이 유일한 추종자가 되어 ~한 칸 뒤처진다
+    const tg = currState.monsters.find(x=>x.id===me.attackId);
+    if(tg && !tg.dying){
+      const d = Math.hypot(tg.x-me.x, tg.y-me.y);
+      if(d > 38){ me.x += (tg.x-me.x)/d*SPEED*dt; me.y += (tg.y-me.y)/d*SPEED*dt; }
+    }
   }
 }
 
@@ -385,13 +400,13 @@ function bodySil(){   // 붉은 피격 점멸용 실루엣
   ctx.moveTo(-6.5,-9); ctx.lineTo(6.5,-9); ctx.lineTo(5,16); ctx.lineTo(-5,16); ctx.closePath();
   ctx.fill();
 }
-function drawChar(x,y,name,level,hp,maxHp,isMe,dead,a){
+function drawChar(x,y,name,hp,maxHp,isMe,dead,a){
   a = a || {};
   ctx.save(); ctx.translate(x,y);
   const al = dead ? 0.4 : 1;
   ctx.globalAlpha = al;
   ctx.fillStyle = isMe ? '#c9a24b' : '#9aa8c0'; ctx.font='11px Georgia'; ctx.textAlign='center';
-  ctx.fillText(name+' Lv'+level, 0, -29);
+  ctx.fillText(name, 0, -29);   // 레벨은 상태창에만 표시
   ctx.save(); ctx.scale(a.facing||1, 1);
   drawBody(isMe, a.equip, a.walk||0, a.moving, a.swing||0);
   if(a.hurt>0){ ctx.globalAlpha = al*0.6*a.hurt; ctx.fillStyle='#ff4232'; bodySil(); ctx.globalAlpha = al; }
@@ -544,27 +559,38 @@ function loop(){
     for(const mo of currState.monsters){
       const e = lerpEntity(currState.monsters, prevState&&prevState.monsters, mo.id);
       let mx=e.x-camX, my=e.y-camY;
-      // 피격 점멸 타이머는 화면 밖이어도 만료시킨다
+      // 사망 연출 진행도 (서버가 dying 동안 잔존시켜 줌)
+      let dp=0;
+      if(mo.dying){ let ds=deathFx.get(mo.id); if(ds==null){ ds=now; deathFx.set(mo.id, now); } dp=Math.min(1,(now-ds)/DEATH_MS); }
+      // 피격 점멸 타이머 (화면 밖이어도 만료)
       let flash=0; const mf=monFx.get(mo.id);
-      if(mf!=null){ const p=1-(now-mf)/HIT_MS; if(p>0) flash=p; else monFx.delete(mo.id); }
+      if(mf!=null){ const q=1-(now-mf)/HIT_MS; if(q>0) flash=q; else monFx.delete(mo.id); }
       if(mx<-60||my<-60||mx>VW+60||my>VH+60) continue;
-      if(flash>0){ mx+=Math.sin(now/16)*3*flash; my+=Math.cos(now/21)*2*flash; }   // 흔들림
       const boss = mo.boss, base = boss ? 22 : (8+mo.tier*3);
+      // 죽는 중: 앞부분(흔들림+번쩍) → 뒷부분(발치 기준으로 쓰러지며 소멸)
+      let dAlpha=1, drot=0, ddrop=0;
+      if(mo.dying){
+        if(dp<0.35) flash=Math.max(flash, 1-dp/0.35);
+        else { const q=(dp-0.35)/0.65; drot=q*1.2; ddrop=q*4; dAlpha=1-q; }
+      }
+      if(flash>0){ mx+=Math.sin(now/16)*3*flash; my+=Math.cos(now/21)*2*flash; }   // 흔들림
       ctx.save(); ctx.translate(mx,my);
+      if(mo.dying){ ctx.globalAlpha=Math.max(0,dAlpha);
+        ctx.translate(0, base+ddrop); ctx.rotate(drot); ctx.translate(0, -base); }
       ctx.fillStyle = boss ? '#3a1626' : (mo.tier===3?'#8a3a4a':mo.tier===2?'#6e4a3a':'#4a5a3a');
       ctx.beginPath();
       for(let i=0;i<7;i++){ const a=i/7*Math.PI*2; const rr=base*(0.85+0.25*Math.sin(a*3+now/300));
         i===0?ctx.moveTo(Math.cos(a)*rr,Math.sin(a)*rr):ctx.lineTo(Math.cos(a)*rr,Math.sin(a)*rr); }
       ctx.closePath(); ctx.fill();
-      if(flash>0){ ctx.save(); ctx.globalAlpha=0.78*flash; ctx.fillStyle='#fff'; ctx.fill(); ctx.restore(); }
+      if(flash>0){ ctx.save(); ctx.globalAlpha=Math.max(0,dAlpha)*0.8*flash; ctx.fillStyle='#fff'; ctx.fill(); ctx.restore(); }
       if(boss){ ctx.strokeStyle='#d86a7a'; ctx.lineWidth=2; ctx.stroke(); }
       const er = boss ? 2.8 : 1.6, ex = boss ? 5 : 3;
       ctx.fillStyle = boss ? '#ffcf6a' : '#e8d8b8';
       ctx.beginPath(); ctx.arc(-ex,-2,er,0,7); ctx.arc(ex,-2,er,0,7); ctx.fill();
       ctx.restore();
-      if(boss){ ctx.fillStyle='#d86a7a'; ctx.font='bold 12px Georgia'; ctx.textAlign='center';
+      if(boss && !mo.dying){ ctx.fillStyle='#d86a7a'; ctx.font='bold 12px Georgia'; ctx.textAlign='center';
         ctx.fillText('鬼將', mx, my-base-12); }
-      if(mo.hp<mo.maxHp){ const w = boss?48:24, by = my-base-7;
+      if(!mo.dying && mo.hp<mo.maxHp){ const w = boss?48:24, by = my-base-7;
         ctx.fillStyle='#1a1410'; ctx.fillRect(mx-w/2,by,w,3);
         ctx.fillStyle = boss?'#d8402f':'#a83a2f'; ctx.fillRect(mx-w/2,by,w*Math.max(0,mo.hp)/mo.maxHp,3); }
     }
@@ -572,13 +598,13 @@ function loop(){
       if(pl.id === myId) continue;
       const e = lerpEntity(currState.players, prevState&&prevState.players, pl.id);
       const a = computeAnim(pl.id, e.x, e.y, now, dt, false, null);
-      drawChar(e.x-camX+a.ox, e.y-camY+a.oy, pl.name, pl.level, pl.hp, pl.maxHp, false, pl.dead, a);
+      drawChar(e.x-camX+a.ox, e.y-camY+a.oy, pl.name, pl.hp, pl.maxHp, false, pl.dead, a);
     }
     const sp = currState.players.find(p=>p.id===myId);
     if(sp){
       if(me.attackId){   // 사거리 안에서 일정 간격으로 휘두름 + 타격음
         const tg = currState.monsters.find(x=>x.id===me.attackId);
-        if(!tg) me.attackId = null;
+        if(!tg || tg.dying) me.attackId = null;   // 죽어가는 적엔 더는 휘두르지/소리내지 않는다
         else if(Math.hypot(tg.x-me.x, tg.y-me.y) <= ATK_RANGE && now-myLastSwing >= ATTACK_CD){
           myLastSwing = now; swingFx.set(myId, now); sfxSwing();
         }
@@ -586,7 +612,7 @@ function loop(){
       const a = computeAnim(myId, me.x, me.y, now, dt, true, myEquip);
       if(me.attackId){ const tg=currState.monsters.find(x=>x.id===me.attackId);
         if(tg){ const f=tg.x>me.x?1:-1; a.facing=f; face.set(myId,f); } }
-      drawChar(me.x-camX+a.ox, me.y-camY+a.oy, sp.name, sp.level, sp.hp, sp.maxHp, true, sp.dead, a);
+      drawChar(me.x-camX+a.ox, me.y-camY+a.oy, sp.name, sp.hp, sp.maxHp, true, sp.dead, a);
     }
   }
 

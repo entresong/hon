@@ -17,6 +17,7 @@ const PLAYER_SPEED = 170;
 const ATTACK_CD = 600;
 const MONSTER_COUNT = 24;
 const SOUL_PRIORITY_MS = 5000;
+const DEATH_MS = 440;          // 몬스터 사망 연출 동안 잔존 (추가 타격 불가). client.html의 DEATH_MS는 이보다 작아야 연출이 제거 전에 끝난다
 const REGEN_HP = 2.4;
 const REGEN_MP = 1.6;
 
@@ -83,7 +84,7 @@ function spawnMonster(){
     x, y, tier, boss:false,
     hp: 20*tier, maxHp: 20*tier, atk: 3+tier*2,
     wander: rnd(Math.PI*2), aggroId: null,
-    damage: new Map(), lastHitAt: 0,
+    damage: new Map(), lastHitAt: 0, dying: false, dieAt: 0,
   });
 }
 function spawnBoss(){
@@ -93,7 +94,7 @@ function spawnBoss(){
     tier: 4, boss: true,
     hp: 340, maxHp: 340, atk: 21,
     wander: rnd(Math.PI*2), aggroId: null,
-    damage: new Map(), lastHitAt: 0,
+    damage: new Map(), lastHitAt: 0, dying: false, dieAt: 0,
   });
 }
 for(let i=0;i<MONSTER_COUNT;i++) spawnMonster();
@@ -132,7 +133,8 @@ wss.on('connection', (ws) => {
       p.attackId = null;
     }
     if(m.t === 'attack'){
-      if(monsters.has(m.id)) { p.attackId = m.id; p.tx = p.ty = null; }
+      const mo = monsters.get(m.id);
+      if(mo && !mo.dying) { p.attackId = m.id; p.tx = p.ty = null; }
     }
     if(m.t === 'loot'){
       const s = souls.get(m.id);
@@ -248,7 +250,7 @@ setInterval(() => {
 
     if(p.attackId){
       const mo = monsters.get(p.attackId);
-      if(!mo){ p.attackId = null; }
+      if(!mo || mo.dying){ p.attackId = null; }   // 사망 연출 중이면 더는 때릴 수 없다
       else {
         const d = dist(p, mo);
         if(d > p.range + 10){
@@ -259,9 +261,8 @@ setInterval(() => {
           const a = effAtk(p);
           mo.hp -= a;
           mo.aggroId = pid;
-          mo.damage.set(pid, (mo.damage.get(pid)||0) + a);
-          grantExp(p, pid, a);
-          if(mo.hp <= 0) killMonster(p.attackId, mo, now);
+          mo.damage.set(pid, (mo.damage.get(pid)||0) + a);   // 경험치는 처치 시 일괄 배분 (per-hit 지급 폐지)
+          if(mo.hp <= 0) killMonster(mo, now);
         }
       }
     }
@@ -273,6 +274,7 @@ setInterval(() => {
   }
 
   for(const [mid, mo] of monsters){
+    if(mo.dying){ if(now >= mo.dieAt) monsters.delete(mid); continue; }   // 사망 연출 후 제거
     const tgt = mo.aggroId ? players.get(mo.aggroId) : null;
     if(tgt && !tgt.respawnAt){
       const d = dist(mo, tgt);
@@ -317,7 +319,7 @@ setInterval(() => {
       level: p.level, exp: p.exp, expNeed: expNeed(p.level),
       dead: p.respawnAt > now })),   // 魂(지갑)은 사적 정보 — t:self로만 본인에게 보낸다
     monsters: [...monsters.entries()].map(([mid,m]) => ({
-      id: mid, x: Math.round(m.x), y: Math.round(m.y), hp: m.hp, maxHp: m.maxHp, tier: m.tier, boss: !!m.boss })),
+      id: mid, x: Math.round(m.x), y: Math.round(m.y), hp: m.hp, maxHp: m.maxHp, tier: m.tier, boss: !!m.boss, dying: !!m.dying })),
     souls: [...souls.entries()].map(([sid,s]) => ({
       id: sid, x: Math.round(s.x), y: Math.round(s.y), amount: s.amount,
       locked: now < s.unlockAt, ownerId: s.ownerId })),
@@ -327,11 +329,30 @@ setInterval(() => {
   });
 }, TICK);
 
-function killMonster(mid, mo, now){
+function killMonster(mo, now){
+  if(mo.dying) return;   // 한 번만 처리
   let topPid = null, topDmg = -1;
   for(const [pid, dmg] of mo.damage){
     if(dmg > topDmg){ topDmg = dmg; topPid = pid; }
   }
+
+  // 경험치 일괄 지급: 총량은 tier 비례, 접속 중 기여자에게 누적 피해 비율대로 배분.
+  // 반올림 잔차는 소수부가 큰 순서로 1씩 나눠, 합계가 정확히 totalExp가 되게 한다(최대잔여법).
+  const totalExp = mo.boss ? mo.tier * 50 : mo.tier * 20;
+  const contrib = []; let presentDmg = 0;
+  for(const [pid, dmg] of mo.damage){
+    const pl = players.get(pid);
+    if(pl){ contrib.push({ pid, pl, dmg }); presentDmg += dmg; }
+  }
+  if(presentDmg > 0){
+    let assigned = 0;
+    for(const c of contrib){ c.exact = totalExp * c.dmg / presentDmg; c.base = Math.floor(c.exact); assigned += c.base; }
+    contrib.sort((a, b) => (b.exact - b.base) - (a.exact - a.base));
+    let leftover = totalExp - assigned;
+    for(let i = 0; i < contrib.length && leftover > 0; i++){ contrib[i].base++; leftover--; }
+    for(const c of contrib){ if(c.base > 0) grantExp(c.pl, c.pid, c.base); }
+  }
+
   const amount = mo.boss ? 70 : mo.tier * 5;
   souls.set(nid('s'), {
     x: mo.x, y: mo.y, amount,
@@ -352,7 +373,10 @@ function killMonster(mid, mo, now){
     if(topPid){ const tp = players.get(topPid); if(tp) send(tp.ws, { t:'msg', k:'g', text:`${EQUIP[key].name}을(를) 떨어뜨렸다!` }); }
   }
 
-  monsters.delete(mid);
+  // 즉시 제거하지 않고 사망 연출 동안 잔존 — 실제 제거는 틱 루프가 dieAt에 처리
+  mo.dying = true;
+  mo.dieAt = now + DEATH_MS;
+  mo.aggroId = null;
   if(mo.boss) setTimeout(spawnBoss, 45000);          // 보스는 처치 후 한참 뒤에 부활
   else setTimeout(spawnMonster, 3000 + rnd(4000));
 }
