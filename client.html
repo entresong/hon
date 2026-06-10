@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>魂</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; overflow:hidden; background:#15120e; font-family:Georgia,serif; }
+  canvas { display:block; width:100%; height:100%; touch-action:none; }
+
+  /* ===== 리니지풍 상태창 ===== */
+  #statwin {
+    position:absolute; top:10px; left:10px; width:208px; display:none;
+    background:linear-gradient(#241d14,#1a140d);
+    border:2px solid #6e5430; border-radius:3px;
+    box-shadow: inset 0 0 0 1px #0c0a06, 0 2px 8px rgba(0,0,0,0.6);
+    padding:8px 10px 9px; color:#d8c8a8; font-size:12px; pointer-events:none;
+  }
+  #statwin .nm { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+  #statwin .nm b { color:#e8d8b8; font-weight:normal; font-size:14px; letter-spacing:1px; }
+  #statwin .nm span { color:#c9a24b; font-size:11px; }
+  .gauge { position:relative; height:14px; background:#0c0a06; border:1px solid #3a2f20;
+    border-radius:2px; margin-bottom:4px; overflow:hidden; }
+  .gauge > .fill { position:absolute; inset:0; transform-origin:left; }
+  .gauge > .txt { position:absolute; inset:0; text-align:center; font-size:10px; line-height:14px;
+    color:#f0e6d0; text-shadow:0 1px 2px #000; letter-spacing:1px; }
+  #hpf { background:linear-gradient(#c14b3a,#7e2a1e); }
+  #mpf { background:linear-gradient(#3f6da8,#23406e); }
+  #expw { height:5px; margin-bottom:5px; }
+  #expf { background:linear-gradient(#d8c050,#9a842c); }
+  #statwin .soul { display:flex; justify-content:space-between; font-size:11px; color:#8a7d63; }
+  #statwin .soul b { color:#c9a24b; font-weight:normal; }
+
+  #msg { position:absolute; bottom:24px; left:0; right:0; text-align:center; color:#c9a24b;
+    font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; }
+
+  #setup { position:absolute; inset:0; background:rgba(10,8,5,0.95); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; color:#d8c8a8; padding:24px; z-index:10; text-align:center; }
+  #setup h1 { font-size:56px; color:#c9a24b; font-weight:normal; margin-bottom:4px; }
+  #setup .tt { font-size:12px; color:#8a7d63; letter-spacing:4px; margin-bottom:22px; }
+  #setup input { width:280px; padding:10px; margin-bottom:8px; background:#221d16; border:1px solid #3a2f20;
+    color:#d8c8a8; font-family:Georgia,serif; font-size:13px; border-radius:3px; text-align:center; }
+  #setup button { background:#2c261c; border:1px solid #c9a24b; color:#c9a24b; font-family:Georgia,serif;
+    font-size:15px; letter-spacing:4px; padding:11px 34px; cursor:pointer; border-radius:3px; margin-top:6px; }
+  #err { color:#a83a2f; font-size:12px; margin-top:8px; min-height:16px; }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+
+<div id="statwin">
+  <div class="nm"><b id="who">—</b><span>Lv <span id="lv">1</span></span></div>
+  <div class="gauge"><div class="fill" id="hpf"></div><div class="txt" id="hpt">HP 60 / 60</div></div>
+  <div class="gauge"><div class="fill" id="mpf"></div><div class="txt" id="mpt">MP 30 / 30</div></div>
+  <div class="gauge" id="expw"><div class="fill" id="expf"></div></div>
+  <div class="soul"><span>접속 <span id="count">1</span>명</span><span>魂 <b id="soulv">0</b></span></div>
+</div>
+
+<div id="msg"></div>
+<div id="setup">
+  <h1>魂</h1>
+  <div class="tt">베어라, 거두어라, 오르라</div>
+  <input id="nick" placeholder="그대의 이름" maxlength="10" />
+  <button onclick="enter()">세계에 들어선다</button>
+  <div id="err"></div>
+</div>
+
+<script>
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+function fit(){ cv.width=innerWidth*devicePixelRatio; cv.height=innerHeight*devicePixelRatio;
+  cv.style.width=innerWidth+'px'; cv.style.height=innerHeight+'px';
+  ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
+addEventListener('resize', fit); fit();
+
+let ws=null, myId=null, WORLD=1600;
+let prevState=null, currState=null, currAt=0, prevAt=0;
+const me = { x:0, y:0, tx:null, ty:null, known:false };
+const SPEED = 170;
+const effects = []; // {kind, id, start, level}
+
+let msgEl=document.getElementById('msg'), msgT=null;
+function say(t,k){ msgEl.style.color = k==='b'?'#a83a2f':'#c9a24b'; msgEl.textContent=t;
+  clearTimeout(msgT); msgT=setTimeout(()=>msgEl.textContent='',2400); }
+
+function enter(){
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  const addr = proto + location.host;
+  const nick = document.getElementById('nick').value.trim() || '무명천민';
+  try{ ws = new WebSocket(addr); }
+  catch(e){ document.getElementById('err').textContent='주소를 확인하세요.'; return; }
+  ws.onopen = () => ws.send(JSON.stringify({ t:'join', name: nick }));
+  ws.onerror = () => document.getElementById('err').textContent='연결 실패 — 서버가 켜져 있나요?';
+  ws.onclose = () => { if(myId) say('서버와 연결이 끊겼다', 'b'); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if(m.t === 'welcome'){ myId = m.id; WORLD = m.world;
+      document.getElementById('setup').style.display='none';
+      document.getElementById('statwin').style.display='block';
+      document.getElementById('who').textContent = nick;
+      say('탭=이동 · 요괴 탭=공격 · 혼 탭=줍기 · 쉬면 회복된다');
+    }
+    if(m.t === 'state'){
+      prevState = currState; prevAt = currAt;
+      currState = m; currAt = performance.now();
+      const sp = m.players.find(p => p.id === myId);
+      if(sp){
+        document.getElementById('lv').textContent = sp.level;
+        document.getElementById('hpf').style.transform = 'scaleX('+Math.max(0,sp.hp/sp.maxHp)+')';
+        document.getElementById('hpt').textContent = 'HP '+Math.max(0,sp.hp)+' / '+sp.maxHp;
+        document.getElementById('mpf').style.transform = 'scaleX('+Math.max(0,sp.mp/sp.maxMp)+')';
+        document.getElementById('mpt').textContent = 'MP '+sp.mp+' / '+sp.maxMp;
+        document.getElementById('expf').style.transform = 'scaleX('+(sp.exp/sp.expNeed)+')';
+        document.getElementById('soulv').textContent = sp.soul;
+        document.getElementById('count').textContent = m.players.length;
+        if(!me.known){ me.x=sp.x; me.y=sp.y; me.known=true; }
+        else { me.x += (sp.x-me.x)*0.18; me.y += (sp.y-me.y)*0.18; }
+        if(sp.dead){ me.tx=me.ty=null; }
+      }
+    }
+    if(m.t === 'fx'){ effects.push({ kind:m.kind, id:m.id, level:m.level, start: performance.now() });
+      if(m.kind==='levelup' && m.id===myId) say('LEVEL UP! — Lv '+m.level, 'g'); }
+    if(m.t === 'msg') say(m.text, m.k);
+  };
+}
+
+let camX=0, camY=0;
+cv.addEventListener('pointerdown', e => {
+  if(!ws || !currState) return;
+  const r = cv.getBoundingClientRect();
+  const wx = e.clientX-r.left+camX, wy = e.clientY-r.top+camY;
+  for(const s of currState.souls){
+    if(Math.hypot(wx-s.x, wy-s.y) < 22){ ws.send(JSON.stringify({ t:'loot', id:s.id })); return; }
+  }
+  for(const mo of currState.monsters){
+    if(Math.hypot(wx-mo.x, wy-mo.y) < 24){ ws.send(JSON.stringify({ t:'attack', id:mo.id })); return; }
+  }
+  me.tx=wx; me.ty=wy;
+  ws.send(JSON.stringify({ t:'move', x:wx, y:wy }));
+});
+
+function lerpEntity(list, prevList, id){
+  const c = list.find(o=>o.id===id); if(!c) return null;
+  const p = prevList ? prevList.find(o=>o.id===id) : null;
+  if(!p) return { ...c };
+  const span = Math.max(1, currAt-prevAt);
+  const t = Math.min(1, (performance.now()-currAt)/span);
+  return { ...c, x: p.x+(c.x-p.x)*t, y: p.y+(c.y-p.y)*t };
+}
+
+function update(dt){
+  if(me.tx !== null){
+    const d = Math.hypot(me.tx-me.x, me.ty-me.y);
+    if(d > 4){ me.x += (me.tx-me.x)/d*SPEED*dt; me.y += (me.ty-me.y)/d*SPEED*dt; }
+    else me.tx = me.ty = null;
+  }
+}
+
+function charScreenPos(id){
+  if(id === myId) return { x: me.x-camX, y: me.y-camY };
+  if(!currState) return null;
+  const e = lerpEntity(currState.players, prevState&&prevState.players, id);
+  return e ? { x: e.x-camX, y: e.y-camY } : null;
+}
+
+function drawChar(x,y,name,level,hp,maxHp,isMe,dead){
+  ctx.save(); ctx.translate(x,y);
+  if(dead) ctx.globalAlpha = 0.35;
+  ctx.fillStyle = isMe ? '#d8c8a8' : '#9aa8c0';
+  ctx.beginPath(); ctx.arc(0,0,11,0,7); ctx.fill();
+  ctx.strokeStyle = isMe ? '#c9a24b' : '#5a6880'; ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle = isMe ? '#3a2f20' : '#2a3040';
+  ctx.beginPath(); ctx.ellipse(0,-9,10,3.5,0,0,7); ctx.fill();
+  ctx.fillStyle = isMe ? '#c9a24b' : '#9aa8c0'; ctx.font='11px Georgia'; ctx.textAlign='center';
+  ctx.fillText(name+' Lv'+level, 0, -19);
+  if(hp < maxHp){ ctx.fillStyle='#1a1410'; ctx.fillRect(-13,15,26,3);
+    ctx.fillStyle='#a83a2f'; ctx.fillRect(-13,15,26*Math.max(0,hp)/maxHp,3); }
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+
+let lastT = performance.now();
+function loop(){
+  const now = performance.now(), dt = Math.min(0.05,(now-lastT)/1000); lastT = now;
+  update(dt);
+  const VW=innerWidth, VH=innerHeight;
+  camX=Math.max(0,Math.min(WORLD-VW, me.x-VW/2));
+  camY=Math.max(0,Math.min(WORLD-VH, me.y-VH/2));
+  ctx.fillStyle='#1c1812'; ctx.fillRect(0,0,VW,VH);
+  ctx.strokeStyle='rgba(58,47,32,0.5)'; ctx.lineWidth=1;
+  for(let gx=0; gx<=WORLD; gx+=80){ const sx=gx-camX; if(sx<-1||sx>VW+1)continue;
+    ctx.beginPath(); ctx.moveTo(sx,-camY); ctx.lineTo(sx,WORLD-camY); ctx.stroke(); }
+  for(let gy=0; gy<=WORLD; gy+=80){ const sy=gy-camY; if(sy<-1||sy>VH+1)continue;
+    ctx.beginPath(); ctx.moveTo(-camX,sy); ctx.lineTo(WORLD-camX,sy); ctx.stroke(); }
+  ctx.strokeStyle='#3a2f20'; ctx.lineWidth=3; ctx.strokeRect(-camX,-camY,WORLD,WORLD);
+
+  if(currState){
+    for(const s of currState.souls){
+      const sx=s.x-camX, sy=s.y-camY;
+      const pulse = 3+Math.sin(now/200)*1.5;
+      ctx.fillStyle='#c9a24b';
+      ctx.beginPath(); ctx.arc(sx,sy,5+pulse*0.4,0,7); ctx.fill();
+      ctx.strokeStyle = s.locked ? '#a83a2f' : '#e8d8b8'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.arc(sx,sy,10,0,7); ctx.stroke();
+      ctx.fillStyle='#8a7d63'; ctx.font='9px Georgia'; ctx.textAlign='center';
+      ctx.fillText(s.locked?'임자 있음':'魂 '+s.amount, sx, sy+22);
+    }
+    for(const mo of currState.monsters){
+      const e = lerpEntity(currState.monsters, prevState&&prevState.monsters, mo.id);
+      const mx=e.x-camX, my=e.y-camY;
+      if(mx<-40||my<-40||mx>VW+40||my>VH+40) continue;
+      ctx.save(); ctx.translate(mx,my);
+      ctx.fillStyle = mo.tier===3?'#8a3a4a':mo.tier===2?'#6e4a3a':'#4a5a3a';
+      ctx.beginPath();
+      for(let i=0;i<7;i++){ const a=i/7*Math.PI*2; const rr=(8+mo.tier*3)*(0.85+0.25*Math.sin(a*3+now/300));
+        i===0?ctx.moveTo(Math.cos(a)*rr,Math.sin(a)*rr):ctx.lineTo(Math.cos(a)*rr,Math.sin(a)*rr); }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle='#e8d8b8'; ctx.beginPath(); ctx.arc(-3,-2,1.6,0,7); ctx.arc(3,-2,1.6,0,7); ctx.fill();
+      ctx.restore();
+      if(mo.hp<mo.maxHp){ ctx.fillStyle='#1a1410'; ctx.fillRect(mx-12,my-18,24,3);
+        ctx.fillStyle='#a83a2f'; ctx.fillRect(mx-12,my-18,24*mo.hp/mo.maxHp,3); }
+    }
+    for(const pl of currState.players){
+      if(pl.id === myId) continue;
+      const e = lerpEntity(currState.players, prevState&&prevState.players, pl.id);
+      drawChar(e.x-camX, e.y-camY, pl.name, pl.level, pl.hp, pl.maxHp, false, pl.dead);
+    }
+    const sp = currState.players.find(p=>p.id===myId);
+    if(sp) drawChar(me.x-camX, me.y-camY, sp.name, sp.level, sp.hp, sp.maxHp, true, sp.dead);
+  }
+
+  // ===== 레벨업 연출: 황금 고리 + 솟는 글자 =====
+  for(let i=effects.length-1; i>=0; i--){
+    const fx = effects[i];
+    const t = (now - fx.start)/1200; // 1.2초
+    if(t >= 1){ effects.splice(i,1); continue; }
+    const pos = charScreenPos(fx.id);
+    if(!pos) continue;
+    if(fx.kind === 'levelup'){
+      ctx.save();
+      ctx.globalAlpha = 1-t;
+      // 퍼지는 황금 고리 두 겹
+      ctx.strokeStyle = '#e8c860'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(pos.x, pos.y, 14+t*46, 0, 7); ctx.stroke();
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(pos.x, pos.y, 8+t*30, 0, 7); ctx.stroke();
+      // 솟아오르는 빛 기둥
+      const grad = ctx.createLinearGradient(pos.x, pos.y-70, pos.x, pos.y+14);
+      grad.addColorStop(0, 'rgba(232,200,96,0)');
+      grad.addColorStop(0.6, 'rgba(232,200,96,'+(0.35*(1-t))+')');
+      grad.addColorStop(1, 'rgba(232,200,96,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(pos.x-13, pos.y-70, 26, 84);
+      // LEVEL UP 글자
+      ctx.fillStyle = '#f0dc8c';
+      ctx.font = 'bold 15px Georgia'; ctx.textAlign='center';
+      ctx.fillText('LEVEL UP', pos.x, pos.y - 32 - t*22);
+      ctx.font = '11px Georgia';
+      ctx.fillText('Lv '+fx.level, pos.x, pos.y - 16 - t*22);
+      ctx.restore();
+    }
+  }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
