@@ -27,10 +27,44 @@
     color:#f0e6d0; text-shadow:0 1px 2px #000; letter-spacing:1px; }
   #hpf { background:linear-gradient(#c14b3a,#7e2a1e); }
   #mpf { background:linear-gradient(#3f6da8,#23406e); }
-  #expw { height:5px; margin-bottom:5px; }
+  #expw { margin-bottom:5px; }
   #expf { background:linear-gradient(#d8c050,#9a842c); }
+  #statwin .stat2 { display:flex; justify-content:space-between; font-size:11px; color:#8a7d63; margin-bottom:5px; }
+  #statwin .stat2 b { color:#cdbb8c; font-weight:normal; }
   #statwin .soul { display:flex; justify-content:space-between; font-size:11px; color:#8a7d63; }
   #statwin .soul b { color:#c9a24b; font-weight:normal; }
+
+  /* ===== 장비/상점 버튼 ===== */
+  #btns { position:absolute; right:10px; bottom:60px; display:flex; flex-direction:column; gap:8px; z-index:5; }
+  .gbtn { width:54px; height:54px; border-radius:6px; background:linear-gradient(#2c261c,#1a140d);
+    border:2px solid #6e5430; color:#c9a24b; font-family:Georgia,serif; font-size:13px; letter-spacing:1px;
+    box-shadow: inset 0 0 0 1px #0c0a06, 0 2px 6px rgba(0,0,0,0.6); cursor:pointer; }
+  .gbtn.on { border-color:#c9a24b; color:#f0dc8c; }
+
+  /* ===== 장비창 / 상점창 ===== */
+  .win { position:absolute; inset:0; display:none; z-index:8; }
+  .win .backdrop { position:absolute; inset:0; background:rgba(8,6,4,0.55); }
+  .win .panel { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:min(340px,92vw); max-height:84vh; overflow-y:auto;
+    background:linear-gradient(#241d14,#1a140d); border:2px solid #6e5430; border-radius:4px;
+    box-shadow: inset 0 0 0 1px #0c0a06, 0 4px 18px rgba(0,0,0,0.7);
+    padding:12px 14px 16px; color:#d8c8a8; font-size:12px; }
+  .win .ttl { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+  .win .ttl b { font-size:16px; color:#e8d8b8; font-weight:normal; letter-spacing:2px; }
+  .win .x { cursor:pointer; color:#8a7d63; font-size:18px; padding:0 6px; }
+  .slot { border-top:1px solid #3a2f20; padding:8px 0 3px; }
+  .slot .sh { color:#c9a24b; font-size:11px; margin-bottom:5px; letter-spacing:1px; }
+  .item { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 7px;
+    margin-bottom:4px; background:#1c160e; border:1px solid #322820; border-radius:3px; }
+  .item.eq { border-color:#c9a24b; background:#2a2114; }
+  .item .nm2 { color:#e0d2b0; }
+  .item .st { color:#8a7d63; font-size:10px; margin-left:6px; }
+  .item .empty { color:#6a5f4a; }
+  .item button { flex:none; background:#2c261c; border:1px solid #6e5430; color:#c9a24b; font-family:Georgia,serif;
+    font-size:11px; padding:4px 9px; border-radius:3px; cursor:pointer; }
+  .item button:disabled { opacity:0.4; cursor:default; }
+  .shopbal { text-align:right; color:#c9a24b; font-size:11px; margin-bottom:6px; }
+  .shopbal b { color:#e8d8b8; font-weight:normal; }
 
   #msg { position:absolute; bottom:24px; left:0; right:0; text-align:center; color:#c9a24b;
     font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; }
@@ -53,11 +87,35 @@
   <div class="nm"><b id="who">—</b><span>Lv <span id="lv">1</span></span></div>
   <div class="gauge"><div class="fill" id="hpf"></div><div class="txt" id="hpt">HP 60 / 60</div></div>
   <div class="gauge"><div class="fill" id="mpf"></div><div class="txt" id="mpt">MP 30 / 30</div></div>
-  <div class="gauge" id="expw"><div class="fill" id="expf"></div></div>
+  <div class="gauge" id="expw"><div class="fill" id="expf"></div><div class="txt" id="expt">EXP 0 / 12</div></div>
+  <div class="stat2"><span>공격 <b id="atkv">7</b></span><span>방어 <b id="defv">0</b></span></div>
   <div class="soul"><span>접속 <span id="count">1</span>명</span><span>魂 <b id="soulv">0</b></span></div>
 </div>
 
 <div id="msg"></div>
+
+<div id="btns">
+  <button class="gbtn" id="eqBtn" onclick="toggleWin('eqwin')">장비</button>
+  <button class="gbtn" id="shopBtn" onclick="toggleWin('shopwin')">상점</button>
+</div>
+
+<div class="win" id="eqwin">
+  <div class="backdrop" onclick="closeWins()"></div>
+  <div class="panel">
+    <div class="ttl"><b>장비</b><span class="x" onclick="closeWins()">✕</span></div>
+    <div id="eqbody"></div>
+  </div>
+</div>
+
+<div class="win" id="shopwin">
+  <div class="backdrop" onclick="closeWins()"></div>
+  <div class="panel">
+    <div class="ttl"><b>마을 상점</b><span class="x" onclick="closeWins()">✕</span></div>
+    <div class="shopbal">보유 <b id="shopbal">0</b> 魂</div>
+    <div id="shopbody"></div>
+  </div>
+</div>
+
 <div id="setup">
   <h1>魂</h1>
   <div class="tt">베어라, 거두어라, 오르라</div>
@@ -79,6 +137,14 @@ const me = { x:0, y:0, tx:null, ty:null, known:false };
 const SPEED = 170;
 const effects = []; // {kind, id, start, level}
 
+// ===== 장비/상점 상태 (서버가 권위, 클라는 표시·의도 전송만) =====
+const SLOTS = ['weapon','body','feet','head'];
+const SLOT_NAME = { weapon:'무기', body:'몸통', feet:'발', head:'머리' };
+let village = null, equipDefs = {}, shopKeys = [];
+let myInv = [], myEquip = { weapon:null, body:null, feet:null, head:null };
+let myAtk = 7, myDef = 0, mySoul = 0, nearVillage = false, openWin = null;
+function statText(it){ return (it.atk?'공 +'+it.atk:'') + (it.def?'방 +'+it.def:'') || '—'; }
+
 let msgEl=document.getElementById('msg'), msgT=null;
 function say(t,k){ msgEl.style.color = k==='b'?'#a83a2f':'#c9a24b'; msgEl.textContent=t;
   clearTimeout(msgT); msgT=setTimeout(()=>msgEl.textContent='',2400); }
@@ -95,6 +161,7 @@ function enter(){
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if(m.t === 'welcome'){ myId = m.id; WORLD = m.world;
+      village = m.village; equipDefs = m.equipDefs; shopKeys = m.shop;
       document.getElementById('setup').style.display='none';
       document.getElementById('statwin').style.display='block';
       document.getElementById('who').textContent = nick;
@@ -103,6 +170,7 @@ function enter(){
     if(m.t === 'state'){
       prevState = currState; prevAt = currAt;
       currState = m; currAt = performance.now();
+      document.getElementById('count').textContent = m.players.length;
       const sp = m.players.find(p => p.id === myId);
       if(sp){
         document.getElementById('lv').textContent = sp.level;
@@ -110,13 +178,20 @@ function enter(){
         document.getElementById('hpt').textContent = 'HP '+Math.max(0,sp.hp)+' / '+sp.maxHp;
         document.getElementById('mpf').style.transform = 'scaleX('+Math.max(0,sp.mp/sp.maxMp)+')';
         document.getElementById('mpt').textContent = 'MP '+sp.mp+' / '+sp.maxMp;
-        document.getElementById('expf').style.transform = 'scaleX('+(sp.exp/sp.expNeed)+')';
-        document.getElementById('soulv').textContent = sp.soul;
-        document.getElementById('count').textContent = m.players.length;
+        document.getElementById('expf').style.transform = 'scaleX('+Math.min(1,sp.exp/sp.expNeed)+')';
+        document.getElementById('expt').textContent = 'EXP '+sp.exp+' / '+sp.expNeed;
         if(!me.known){ me.x=sp.x; me.y=sp.y; me.known=true; }
         else { me.x += (sp.x-me.x)*0.18; me.y += (sp.y-me.y)*0.18; }
         if(sp.dead){ me.tx=me.ty=null; }
       }
+    }
+    if(m.t === 'self'){   // 본인 전용: 인벤토리·착용·실효치·魂 (서버가 변경 시에만 보냄)
+      myInv = m.inv; myEquip = m.equip; myAtk = m.atk; myDef = m.def; mySoul = m.soul;
+      document.getElementById('atkv').textContent = myAtk;
+      document.getElementById('defv').textContent = myDef;
+      document.getElementById('soulv').textContent = mySoul;
+      if(openWin === 'eqwin') renderEquip();
+      if(openWin === 'shopwin') refreshShop();
     }
     if(m.t === 'fx'){ effects.push({ kind:m.kind, id:m.id, level:m.level, start: performance.now() });
       if(m.kind==='levelup' && m.id===myId) say('LEVEL UP! — Lv '+m.level, 'g'); }
@@ -132,8 +207,12 @@ cv.addEventListener('pointerdown', e => {
   for(const s of currState.souls){
     if(Math.hypot(wx-s.x, wy-s.y) < 22){ ws.send(JSON.stringify({ t:'loot', id:s.id })); return; }
   }
+  for(const d of (currState.drops||[])){
+    if(Math.hypot(wx-d.x, wy-d.y) < 22){ ws.send(JSON.stringify({ t:'pickup', id:d.id })); return; }
+  }
   for(const mo of currState.monsters){
-    if(Math.hypot(wx-mo.x, wy-mo.y) < 24){ ws.send(JSON.stringify({ t:'attack', id:mo.id })); return; }
+    const r = mo.boss ? 40 : 24;
+    if(Math.hypot(wx-mo.x, wy-mo.y) < r){ me.tx=me.ty=null; ws.send(JSON.stringify({ t:'attack', id:mo.id })); return; }
   }
   me.tx=wx; me.ty=wy;
   ws.send(JSON.stringify({ t:'move', x:wx, y:wy }));
@@ -178,6 +257,72 @@ function drawChar(x,y,name,level,hp,maxHp,isMe,dead){
   ctx.restore(); ctx.globalAlpha = 1;
 }
 
+// ===== 장비창 / 상점창 (의도만 전송, 판정은 서버) =====
+function toggleWin(id){
+  if(openWin === id){ closeWins(); return; }
+  closeWins();
+  openWin = id;
+  document.getElementById(id).style.display = 'block';
+  document.getElementById('eqBtn').classList.toggle('on', id==='eqwin');
+  document.getElementById('shopBtn').classList.toggle('on', id==='shopwin');
+  if(id === 'eqwin') renderEquip();
+  if(id === 'shopwin') renderShop();
+}
+function closeWins(){
+  openWin = null;
+  document.getElementById('eqwin').style.display = 'none';
+  document.getElementById('shopwin').style.display = 'none';
+  document.getElementById('eqBtn').classList.remove('on');
+  document.getElementById('shopBtn').classList.remove('on');
+}
+function renderEquip(){
+  const body = document.getElementById('eqbody'); body.innerHTML = '';
+  for(const slot of SLOTS){
+    const eqKey = myEquip[slot];
+    const owned = myInv.filter(k => equipDefs[k] && equipDefs[k].slot === slot);
+    let html = '<div class="sh">'+SLOT_NAME[slot]+'</div>';
+    if(!eqKey && owned.length === 0){
+      html += '<div class="item"><span class="empty">— 가진 것이 없다 —</span></div>';
+    }
+    for(const k of owned){
+      const it = equipDefs[k], on = (eqKey === k);
+      html += '<div class="item '+(on?'eq':'')+'"><span><span class="nm2">'+it.name+'</span>'+
+        '<span class="st">'+statText(it)+'</span></span>'+
+        (on ? '<button onclick="doUnequip(\''+slot+'\')">해제</button>'
+            : '<button onclick="doEquip(\''+k+'\')">착용</button>')+'</div>';
+    }
+    const div = document.createElement('div'); div.className = 'slot'; div.innerHTML = html;
+    body.appendChild(div);
+  }
+}
+function renderShop(){
+  const body = document.getElementById('shopbody'); body.innerHTML = '';
+  for(const k of shopKeys){
+    const it = equipDefs[k];
+    const div = document.createElement('div'); div.className = 'slot';
+    div.innerHTML = '<div class="item"><span><span class="nm2">'+it.name+'</span>'+
+      '<span class="st">'+SLOT_NAME[it.slot]+' · '+statText(it)+' · '+it.price+'魂</span></span>'+
+      '<button id="buy_'+k+'" onclick="doBuy(\''+k+'\')">구입</button></div>';
+    body.appendChild(div);
+  }
+  refreshShop();
+}
+function refreshShop(){
+  if(openWin !== 'shopwin') return;
+  document.getElementById('shopbal').textContent = mySoul;
+  for(const k of shopKeys){
+    const b = document.getElementById('buy_'+k); if(!b) continue;
+    const it = equipDefs[k];
+    if(myInv.includes(k)){ b.textContent = '보유'; b.disabled = true; }
+    else if(!nearVillage){ b.textContent = '마을밖'; b.disabled = true; }
+    else if(mySoul < it.price){ b.textContent = '魂부족'; b.disabled = true; }
+    else { b.textContent = '구입'; b.disabled = false; }
+  }
+}
+function doEquip(k){ if(ws) ws.send(JSON.stringify({ t:'equip', key:k })); }
+function doUnequip(slot){ if(ws) ws.send(JSON.stringify({ t:'unequip', slot })); }
+function doBuy(k){ if(ws) ws.send(JSON.stringify({ t:'buy', key:k })); }
+
 let lastT = performance.now();
 function loop(){
   const now = performance.now(), dt = Math.min(0.05,(now-lastT)/1000); lastT = now;
@@ -185,6 +330,8 @@ function loop(){
   const VW=innerWidth, VH=innerHeight;
   camX=Math.max(0,Math.min(WORLD-VW, me.x-VW/2));
   camY=Math.max(0,Math.min(WORLD-VH, me.y-VH/2));
+  if(village) nearVillage = Math.hypot(me.x-village.x, me.y-village.y) <= village.r;
+  if(openWin === 'shopwin') refreshShop();
   ctx.fillStyle='#1c1812'; ctx.fillRect(0,0,VW,VH);
   ctx.strokeStyle='rgba(58,47,32,0.5)'; ctx.lineWidth=1;
   for(let gx=0; gx<=WORLD; gx+=80){ const sx=gx-camX; if(sx<-1||sx>VW+1)continue;
@@ -192,6 +339,25 @@ function loop(){
   for(let gy=0; gy<=WORLD; gy+=80){ const sy=gy-camY; if(sy<-1||sy>VH+1)continue;
     ctx.beginPath(); ctx.moveTo(-camX,sy); ctx.lineTo(WORLD-camX,sy); ctx.stroke(); }
   ctx.strokeStyle='#3a2f20'; ctx.lineWidth=3; ctx.strokeRect(-camX,-camY,WORLD,WORLD);
+
+  // ===== 마을 (상점 안전지대) =====
+  if(village){
+    const vx=village.x-camX, vy=village.y-camY;
+    ctx.save();
+    ctx.fillStyle='rgba(120,150,90,0.06)';
+    ctx.beginPath(); ctx.arc(vx,vy,village.r,0,7); ctx.fill();
+    ctx.strokeStyle = nearVillage ? 'rgba(201,162,75,0.5)' : 'rgba(150,180,110,0.22)';
+    ctx.lineWidth=2; ctx.setLineDash([7,7]);
+    ctx.beginPath(); ctx.arc(vx,vy,village.r,0,7); ctx.stroke();
+    ctx.setLineDash([]);
+    // 초가집
+    ctx.fillStyle='#5a4a30'; ctx.fillRect(vx-13,vy-3,26,16);
+    ctx.fillStyle='#7a6238'; ctx.beginPath();
+    ctx.moveTo(vx-18,vy-3); ctx.lineTo(vx,vy-19); ctx.lineTo(vx+18,vy-3); ctx.closePath(); ctx.fill();
+    ctx.fillStyle='#c9a24b'; ctx.font='12px Georgia'; ctx.textAlign='center';
+    ctx.fillText('마을 · 상점', vx, vy+village.r-10);
+    ctx.restore();
+  }
 
   if(currState){
     for(const s of currState.souls){
@@ -204,20 +370,39 @@ function loop(){
       ctx.fillStyle='#8a7d63'; ctx.font='9px Georgia'; ctx.textAlign='center';
       ctx.fillText(s.locked?'임자 있음':'魂 '+s.amount, sx, sy+22);
     }
+    for(const d of (currState.drops||[])){
+      const dx=d.x-camX, dy=d.y-camY;
+      const bob = Math.sin(now/240 + dx)*1.5;
+      ctx.save(); ctx.translate(dx,dy+bob);
+      ctx.fillStyle='#7a6a48'; ctx.strokeStyle = d.locked ? '#a83a2f' : '#e8d8b8'; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(0,-7); ctx.lineTo(6,0); ctx.lineTo(0,7); ctx.lineTo(-6,0); ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = d.locked ? '#a87a6a' : '#cdbb8c'; ctx.font='9px Georgia'; ctx.textAlign='center';
+      const nm = (equipDefs[d.key] && equipDefs[d.key].name) || '?';
+      ctx.fillText(d.locked ? '임자 있음' : nm, 0, 19);
+      ctx.restore();
+    }
     for(const mo of currState.monsters){
       const e = lerpEntity(currState.monsters, prevState&&prevState.monsters, mo.id);
       const mx=e.x-camX, my=e.y-camY;
-      if(mx<-40||my<-40||mx>VW+40||my>VH+40) continue;
+      if(mx<-60||my<-60||mx>VW+60||my>VH+60) continue;
+      const boss = mo.boss, base = boss ? 22 : (8+mo.tier*3);
       ctx.save(); ctx.translate(mx,my);
-      ctx.fillStyle = mo.tier===3?'#8a3a4a':mo.tier===2?'#6e4a3a':'#4a5a3a';
+      ctx.fillStyle = boss ? '#3a1626' : (mo.tier===3?'#8a3a4a':mo.tier===2?'#6e4a3a':'#4a5a3a');
       ctx.beginPath();
-      for(let i=0;i<7;i++){ const a=i/7*Math.PI*2; const rr=(8+mo.tier*3)*(0.85+0.25*Math.sin(a*3+now/300));
+      for(let i=0;i<7;i++){ const a=i/7*Math.PI*2; const rr=base*(0.85+0.25*Math.sin(a*3+now/300));
         i===0?ctx.moveTo(Math.cos(a)*rr,Math.sin(a)*rr):ctx.lineTo(Math.cos(a)*rr,Math.sin(a)*rr); }
       ctx.closePath(); ctx.fill();
-      ctx.fillStyle='#e8d8b8'; ctx.beginPath(); ctx.arc(-3,-2,1.6,0,7); ctx.arc(3,-2,1.6,0,7); ctx.fill();
+      if(boss){ ctx.strokeStyle='#d86a7a'; ctx.lineWidth=2; ctx.stroke(); }
+      const er = boss ? 2.8 : 1.6, ex = boss ? 5 : 3;
+      ctx.fillStyle = boss ? '#ffcf6a' : '#e8d8b8';
+      ctx.beginPath(); ctx.arc(-ex,-2,er,0,7); ctx.arc(ex,-2,er,0,7); ctx.fill();
       ctx.restore();
-      if(mo.hp<mo.maxHp){ ctx.fillStyle='#1a1410'; ctx.fillRect(mx-12,my-18,24,3);
-        ctx.fillStyle='#a83a2f'; ctx.fillRect(mx-12,my-18,24*mo.hp/mo.maxHp,3); }
+      if(boss){ ctx.fillStyle='#d86a7a'; ctx.font='bold 12px Georgia'; ctx.textAlign='center';
+        ctx.fillText('鬼將', mx, my-base-12); }
+      if(mo.hp<mo.maxHp){ const w = boss?48:24, by = my-base-7;
+        ctx.fillStyle='#1a1410'; ctx.fillRect(mx-w/2,by,w,3);
+        ctx.fillStyle = boss?'#d8402f':'#a83a2f'; ctx.fillRect(mx-w/2,by,w*Math.max(0,mo.hp)/mo.maxHp,3); }
     }
     for(const pl of currState.players){
       if(pl.id === myId) continue;
