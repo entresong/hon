@@ -66,6 +66,26 @@
   .shopbal { text-align:right; color:#c9a24b; font-size:11px; margin-bottom:6px; }
   .shopbal b { color:#e8d8b8; font-weight:normal; }
 
+  /* ===== 거래창 / 초대 / 미션 ===== */
+  #tradewin, #invitewin { z-index:9; }   /* 다른 창보다 위 */
+  .traderow { display:flex; gap:8px; }
+  .tcol { flex:1; min-width:0; }
+  .tcol .th { color:#c9a24b; font-size:11px; margin-bottom:4px; border-bottom:1px solid #3a2f20; padding-bottom:3px; }
+  .tcol .th .ok { color:#6abf6a; } .tcol .th .no { color:#8a7d63; }
+  .titem { display:flex; justify-content:space-between; align-items:center; padding:4px 6px; margin-bottom:3px;
+    background:#1c160e; border:1px solid #322820; border-radius:3px; font-size:11px; color:#d8c8a8; cursor:pointer; }
+  .titem.sel { border-color:#c9a24b; background:#2a2114; color:#f0dc8c; }
+  .tsoul { width:74px; padding:3px 5px; background:#221d16; border:1px solid #3a2f20; color:#d8c8a8;
+    font-family:Georgia,serif; font-size:11px; border-radius:3px; }
+  .trbtns, .invbtns { display:flex; gap:8px; margin-top:10px; }
+  .trbtns button, .invbtns button { flex:1; background:#2c261c; border:1px solid #6e5430; color:#c9a24b;
+    font-family:Georgia,serif; font-size:13px; padding:8px; border-radius:3px; cursor:pointer; }
+  .trbtns button.on { border-color:#6abf6a; color:#9be29b; }
+  .mrow { border-top:1px solid #3a2f20; padding:7px 2px; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .mrow .mn { color:#e0d2b0; } .mrow .md { color:#8a7d63; font-size:10px; }
+  .mst { font-size:11px; white-space:nowrap; }
+  .mst.lock { color:#8a7d63; } .mst.act { color:#c9a24b; } .mst.done { color:#6abf6a; }
+
   #msg { position:absolute; bottom:24px; left:0; right:0; text-align:center; color:#c9a24b;
     font-size:14px; text-shadow:0 1px 3px #000; pointer-events:none; }
 
@@ -96,6 +116,7 @@
 
 <div id="btns">
   <button class="gbtn" id="jobBtn" style="display:none" onclick="openJob()">전직</button>
+  <button class="gbtn" id="missionBtn" onclick="toggleWin('missionwin')">미션</button>
   <button class="gbtn" id="eqBtn" onclick="toggleWin('eqwin')">장비</button>
   <button class="gbtn" id="shopBtn" onclick="toggleWin('shopwin')">상점</button>
 </div>
@@ -123,6 +144,43 @@
     <div class="ttl"><b>전직</b><span class="x" onclick="closeWins()">✕</span></div>
     <div style="color:#8a7d63;font-size:11px;margin-bottom:6px">레벨 5 — 그대의 길을 정하라 (한 번만 정할 수 있다)</div>
     <div id="jobbody"></div>
+  </div>
+</div>
+
+<div class="win" id="missionwin">
+  <div class="backdrop" onclick="closeWins()"></div>
+  <div class="panel">
+    <div class="ttl"><b>보스 토벌 미션</b><span class="x" onclick="closeWins()">✕</span></div>
+    <div id="missionbody"></div>
+  </div>
+</div>
+
+<div class="win" id="invitewin">
+  <div class="backdrop" onclick="declineInvite()"></div>
+  <div class="panel">
+    <div class="ttl"><b>거래 신청</b><span class="x" onclick="declineInvite()">✕</span></div>
+    <div id="invitetext" style="color:#d8c8a8;font-size:13px;margin:8px 2px 4px"></div>
+    <div class="invbtns"><button onclick="acceptInvite()">수락</button><button onclick="declineInvite()">거절</button></div>
+  </div>
+</div>
+
+<div class="win" id="tradewin">
+  <div class="backdrop"></div>
+  <div class="panel">
+    <div class="ttl"><b id="tradeTitle">거래</b><span class="x" onclick="doTradeCancel()">✕</span></div>
+    <div class="traderow">
+      <div class="tcol">
+        <div class="th">나의 제안 <span id="trMineOk"></span></div>
+        <div style="margin:4px 0;font-size:11px;color:#8a7d63">혼 <input class="tsoul" id="trSoul" type="number" min="0" value="0" oninput="sendOffer()" onblur="syncTradeSoul()"> / 보유 <b id="trMyBal">0</b></div>
+        <div id="trMine"></div>
+      </div>
+      <div class="tcol">
+        <div class="th"><span id="trTheirName">상대</span> <span id="trTheirOk"></span></div>
+        <div style="margin:4px 0;font-size:11px;color:#8a7d63">혼 <b id="trTheirSoul">0</b></div>
+        <div id="trTheirs"></div>
+      </div>
+    </div>
+    <div class="trbtns"><button id="trConfirmBtn" onclick="doTradeConfirm()">확정</button><button onclick="doTradeCancel()">취소</button></div>
   </div>
 </div>
 
@@ -201,10 +259,15 @@ const JOB_INFO = {
   onmyoji: { name:'음양사', desc:'원거리 주술 · MP 소모 · 혼 보너스' },
   archer:  { name:'궁사',   desc:'원거리 사격 · 이동 빠름' },
 };
+// 미션·거래 상태
+let missionDefs = [], myMissions = {};
+let tradeInviteFrom = null;
+let tradeMine = { items: new Set() };
+let trState = { theirs:{ soul:0, items:[], confirmed:false, name:'' }, mineConfirmed:false };
 function statText(it){ return (it.atk?'공 +'+it.atk:'') + (it.def?'방 +'+it.def:'') || '—'; }
 
 let msgEl=document.getElementById('msg'), msgT=null;
-function say(t,k){ msgEl.style.color = k==='b'?'#a83a2f':'#c9a24b'; msgEl.textContent=t;
+function say(t,k){ msgEl.style.color = k==='b'?'#a83a2f':k==='g'?'#6abf6a':'#c9a24b'; msgEl.textContent=t;
   clearTimeout(msgT); msgT=setTimeout(()=>msgEl.textContent='',2400); }
 
 function enter(){
@@ -226,7 +289,7 @@ function enter(){
     if(m.t === 'loginfail'){ document.getElementById('err').textContent = m.reason || '입장 실패';
       try{ ws.onclose=null; ws.close(); }catch(_){} ws=null; return; }   // 재시도 시 새 소켓 만들도록 정리
     if(m.t === 'welcome'){ myId = m.id; WORLD = m.world;
-      village = m.village; equipDefs = m.equipDefs; shopKeys = m.shop;
+      village = m.village; equipDefs = m.equipDefs; shopKeys = m.shop; missionDefs = m.missionDefs || [];
       document.getElementById('setup').style.display='none';
       document.getElementById('statwin').style.display='block';
       document.getElementById('who').textContent = nick;
@@ -287,13 +350,15 @@ function enter(){
     }
     if(m.t === 'self'){   // 본인 전용: 인벤토리·착용·실효치·魂·직업 (서버가 변경 시에만 보냄)
       myInv = m.inv; myEquip = m.equip; myAtk = m.atk; myDef = m.def; mySoul = m.soul;
-      myJob = m.job; mySpeed = m.speed || 170; myRange = m.range || 34;
+      myJob = m.job; mySpeed = m.speed || 170; myRange = m.range || 34; myMissions = m.missions || {};
       document.getElementById('atkv').textContent = myAtk;
       document.getElementById('defv').textContent = myDef;
       document.getElementById('soulv').textContent = mySoul;
       updateJobBtn();
       if(openWin === 'eqwin') renderEquip();
       if(openWin === 'shopwin') renderShop();
+      if(openWin === 'missionwin') renderMission();
+      if(document.getElementById('tradewin').style.display === 'block') renderTrade();   // 보유 혼/인벤 갱신
     }
     if(m.t === 'fx'){
       if(m.kind === 'proj'){   // 원거리 투사체: 날아가는 연출 + 시전 자세
@@ -308,6 +373,25 @@ function enter(){
       }
     }
     if(m.t === 'canjob'){ openJob(); }
+    if(m.t === 'mission'){ say(m.text, 'g'); if(m.kind === 'done') sfxLevel(); if(openWin==='missionwin') renderMission(); }
+    // ── 거래 ──
+    if(m.t === 'trade_invite'){
+      if(document.getElementById('invitewin').style.display === 'block') return;   // 이미 떠 있는 초대 유지(동시 초대 무시)
+      tradeInviteFrom = m.from;
+      document.getElementById('invitetext').textContent = m.name + ' 님이 거래를 청한다';
+      document.getElementById('invitewin').style.display = 'block'; }
+    if(m.t === 'trade_open'){ openTradeWin(m.withName); }
+    if(m.t === 'trade_state'){
+      if(document.getElementById('tradewin').style.display !== 'block') openTradeWin((m.theirs&&m.theirs.name)||'상대');
+      tradeMine.items = new Set(m.mine.items);
+      trState.mineConfirmed = m.mine.confirmed;
+      trState.theirs = m.theirs;
+      trState.mineSoul = m.mine.soul;   // 서버가 확정한(클램프된) 내 제안 혼
+      const si = document.getElementById('trSoul'); if(document.activeElement !== si) si.value = m.mine.soul;
+      renderTrade();
+    }
+    if(m.t === 'trade_done'){ closeTradeWin(); say('거래 성사', 'g'); }
+    if(m.t === 'trade_cancel'){ closeTradeWin(); say(m.reason || '거래가 취소되었다', 'b'); }
     if(m.t === 'msg') say(m.text, m.k);
   };
 }
@@ -326,10 +410,14 @@ cv.addEventListener('pointerdown', e => {
   }
   for(const mo of currState.monsters){
     if(mo.dying) continue;   // 죽어가는 요괴는 겨냥 불가
-    const r = mo.boss ? 40 : 24;
+    const r = mo.boss ? ((mo.r||22)+10) : 24;
     if(Math.hypot(wx-mo.x, wy-mo.y) < r){ me.tx=me.ty=null; me.attackId=mo.id; ws.send(JSON.stringify({ t:'attack', id:mo.id })); return; }
   }
-  if(village && nearVillage && !openWin && Math.hypot(wx-village.x, wy-village.y) < 46){   // 마을 상점 탭 → 상점 창 (요괴 겨냥 우선)
+  for(const pl of currState.players){   // 다른 플레이어 탭 → 거래 신청
+    if(pl.id === myId || pl.dead) continue;
+    if(Math.hypot(wx-pl.x, wy-pl.y) < 18){ ws.send(JSON.stringify({ t:'trade_req', id: pl.id })); return; }
+  }
+  if(village && nearVillage && !openWin && Math.hypot(wx-village.x, wy-village.y) < 46){   // 마을 상점 탭 → 상점 창 (요괴/거래 겨냥 우선)
     toggleWin('shopwin'); return;
   }
   me.tx=wx; me.ty=wy; me.attackId=null;
@@ -517,17 +605,70 @@ function toggleWin(id){
   document.getElementById(id).style.display = 'block';
   document.getElementById('eqBtn').classList.toggle('on', id==='eqwin');
   document.getElementById('shopBtn').classList.toggle('on', id==='shopwin');
+  document.getElementById('missionBtn').classList.toggle('on', id==='missionwin');
   if(id === 'eqwin') renderEquip();
   if(id === 'shopwin') renderShop();
+  if(id === 'missionwin') renderMission();
 }
 function closeWins(){
   openWin = null;
-  document.getElementById('eqwin').style.display = 'none';
-  document.getElementById('shopwin').style.display = 'none';
-  document.getElementById('jobwin').style.display = 'none';
-  document.getElementById('eqBtn').classList.remove('on');
-  document.getElementById('shopBtn').classList.remove('on');
+  for(const w of ['eqwin','shopwin','jobwin','missionwin']) document.getElementById(w).style.display = 'none';
+  for(const b of ['eqBtn','shopBtn','missionBtn']) document.getElementById(b).classList.remove('on');
 }
+// ===== 보스 미션 패널 =====
+function renderMission(){
+  const body = document.getElementById('missionbody'); body.innerHTML = '';
+  if(!missionDefs.length){ body.innerHTML = '<div class="mrow"><span class="md">미션 정보가 없다</span></div>'; return; }
+  for(const md of missionDefs){
+    const st = myMissions[md.key];
+    let cls='lock', label='Lv '+md.reqLevel+' 필요';
+    if(st === 'done'){ cls='done'; label='완료 ✔'; }
+    else if(st === 'active' || myLevel >= md.reqLevel){ cls='act'; label='진행 중'; }
+    const div = document.createElement('div'); div.className='mrow';
+    div.innerHTML = '<span><span class="mn">'+md.name+'</span><br><span class="md">'+md.hint+' 구역 · 보상 '+md.soul+'魂 + 장비</span></span>'+
+      '<span class="mst '+cls+'">'+label+'</span>';
+    body.appendChild(div);
+  }
+}
+// ===== 거래 (의도만 전송, 판정·체결은 서버) =====
+function openTradeWin(withName){
+  closeWins();   // 다른 창(상점/장비/미션)은 닫고 거래창만
+  tradeMine = { items: new Set() };
+  trState = { theirs:{ soul:0, items:[], confirmed:false, name:withName }, mineConfirmed:false, mineSoul:0 };
+  document.getElementById('tradeTitle').textContent = '거래 — ' + withName;
+  document.getElementById('trSoul').value = 0;
+  document.getElementById('tradewin').style.display = 'block';
+  renderTrade();
+}
+function closeTradeWin(){ document.getElementById('tradewin').style.display = 'none'; }
+function renderTrade(){
+  const mineEl = document.getElementById('trMine'); mineEl.innerHTML = '';
+  for(const k of myInv){
+    const it = equipDefs[k]; if(!it) continue;
+    const sel = tradeMine.items.has(k);
+    const d = document.createElement('div'); d.className = 'titem' + (sel?' sel':'');
+    d.innerHTML = '<span>'+it.name+'</span><span>'+(sel?'올림':'＋')+'</span>';
+    d.onclick = () => toggleTradeItem(k);
+    mineEl.appendChild(d);
+  }
+  if(!myInv.length) mineEl.innerHTML = '<div class="md" style="color:#6a5f4a">가진 것이 없다</div>';
+  document.getElementById('trMyBal').textContent = mySoul;
+  const th = document.getElementById('trTheirs'); th.innerHTML = '';
+  for(const k of (trState.theirs.items||[])){ const it = equipDefs[k]; const d = document.createElement('div'); d.className='titem'; d.innerHTML = '<span>'+((it&&it.name)||k)+'</span>'; th.appendChild(d); }
+  if(!(trState.theirs.items||[]).length) th.innerHTML = '<div class="md" style="color:#6a5f4a">—</div>';
+  document.getElementById('trTheirSoul').textContent = trState.theirs.soul||0;
+  document.getElementById('trTheirName').textContent = trState.theirs.name || '상대';
+  document.getElementById('trTheirOk').innerHTML = trState.theirs.confirmed ? '<span class="ok">✔ 확정</span>' : '<span class="no">대기</span>';
+  document.getElementById('trMineOk').innerHTML = trState.mineConfirmed ? '<span class="ok">✔ 확정</span>' : '<span class="no">미확정</span>';
+  const cb = document.getElementById('trConfirmBtn'); cb.classList.toggle('on', trState.mineConfirmed); cb.textContent = trState.mineConfirmed ? '확정됨' : '확정';
+}
+function toggleTradeItem(k){ if(tradeMine.items.has(k)) tradeMine.items.delete(k); else tradeMine.items.add(k); sendOffer(); }
+function sendOffer(){ if(!ws) return; let soul = parseInt(document.getElementById('trSoul').value, 10); if(!(soul >= 0)) soul = 0; ws.send(JSON.stringify({ t:'trade_offer', soul, items:[...tradeMine.items] })); }
+function syncTradeSoul(){ document.getElementById('trSoul').value = trState.mineSoul || 0; }   // 칸을 벗어나면 서버가 확정한 값으로 표시
+function doTradeConfirm(){ if(ws) ws.send(JSON.stringify({ t:'trade_confirm' })); }
+function doTradeCancel(){ if(ws) ws.send(JSON.stringify({ t:'trade_cancel' })); closeTradeWin(); }
+function acceptInvite(){ if(ws && tradeInviteFrom != null) ws.send(JSON.stringify({ t:'trade_accept', id: tradeInviteFrom })); document.getElementById('invitewin').style.display='none'; tradeInviteFrom = null; }
+function declineInvite(){ if(ws && tradeInviteFrom != null) ws.send(JSON.stringify({ t:'trade_decline', id: tradeInviteFrom })); document.getElementById('invitewin').style.display='none'; tradeInviteFrom = null; }
 // ===== 전직 (의도만 전송, 판정은 서버) =====
 function updateJobBtn(){
   const b = document.getElementById('jobBtn'); if(!b) return;
@@ -666,8 +807,8 @@ function loop(){
       // 피격 점멸 타이머 (화면 밖이어도 만료)
       let flash=0; const mf=monFx.get(mo.id);
       if(mf!=null){ const q=1-(now-mf)/HIT_MS; if(q>0) flash=q; else monFx.delete(mo.id); }
-      if(mx<-60||my<-60||mx>VW+60||my>VH+60) continue;
-      const boss = mo.boss, base = boss ? 22 : (8+mo.tier*3);
+      if(mx<-70||my<-70||mx>VW+70||my>VH+70) continue;
+      const boss = mo.boss, base = boss ? (mo.r || 22) : (8+mo.tier*3);
       // 죽는 중: 앞부분(흔들림+번쩍) → 뒷부분(발치 기준으로 쓰러지며 소멸)
       let dAlpha=1, drot=0, ddrop=0;
       if(mo.dying){
@@ -678,20 +819,20 @@ function loop(){
       ctx.save(); ctx.translate(mx,my);
       if(mo.dying){ ctx.globalAlpha=Math.max(0,dAlpha);
         ctx.translate(0, base+ddrop); ctx.rotate(drot); ctx.translate(0, -base); }
-      ctx.fillStyle = boss ? '#3a1626' : (mo.tier===3?'#8a3a4a':mo.tier===2?'#6e4a3a':'#4a5a3a');
+      ctx.fillStyle = boss ? (mo.color || '#3a1626') : (mo.tier===3?'#8a3a4a':mo.tier===2?'#6e4a3a':'#4a5a3a');
       ctx.beginPath();
       for(let i=0;i<7;i++){ const a=i/7*Math.PI*2; const rr=base*(0.85+0.25*Math.sin(a*3+now/300));
         i===0?ctx.moveTo(Math.cos(a)*rr,Math.sin(a)*rr):ctx.lineTo(Math.cos(a)*rr,Math.sin(a)*rr); }
       ctx.closePath(); ctx.fill();
       if(flash>0){ ctx.save(); ctx.globalAlpha=Math.max(0,dAlpha)*0.8*flash; ctx.fillStyle='#fff'; ctx.fill(); ctx.restore(); }
-      if(boss){ ctx.strokeStyle='#d86a7a'; ctx.lineWidth=2; ctx.stroke(); }
-      const er = boss ? 2.8 : 1.6, ex = boss ? 5 : 3;
+      if(boss){ ctx.strokeStyle='#f0c0b0'; ctx.lineWidth=2; ctx.stroke(); }
+      const er = boss ? Math.max(2.6, base*0.11) : 1.6, ex = boss ? base*0.22 : 3;
       ctx.fillStyle = boss ? '#ffcf6a' : '#e8d8b8';
       ctx.beginPath(); ctx.arc(-ex,-2,er,0,7); ctx.arc(ex,-2,er,0,7); ctx.fill();
       ctx.restore();
-      if(boss && !mo.dying){ ctx.fillStyle='#d86a7a'; ctx.font='bold 12px Georgia'; ctx.textAlign='center';
-        ctx.fillText('鬼將', mx, my-base-12); }
-      if(!mo.dying && mo.hp<mo.maxHp){ const w = boss?48:24, by = my-base-7;
+      if(boss && !mo.dying){ ctx.fillStyle='#f0d0c0'; ctx.font='bold 13px Georgia'; ctx.textAlign='center';
+        ctx.fillText(mo.name || '鬼將', mx, my-base-12); }
+      if(!mo.dying && mo.hp<mo.maxHp){ const w = boss?Math.max(48,base*2):24, by = my-base-9;
         ctx.fillStyle='#1a1410'; ctx.fillRect(mx-w/2,by,w,3);
         ctx.fillStyle = boss?'#d8402f':'#a83a2f'; ctx.fillRect(mx-w/2,by,w*Math.max(0,mo.hp)/mo.maxHp,3); }
     }

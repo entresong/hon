@@ -18,10 +18,14 @@ create table if not exists public.characters (
   job         text,                                      -- null=천민, 'warrior' | 'onmyoji' | 'archer'
   equip       jsonb   not null default '{"weapon":"scythe","body":"hemprobe","feet":"straw","head":null}'::jsonb,
   inv         jsonb   not null default '["scythe","hemprobe","straw"]'::jsonb,
+  missions    jsonb   not null default '{}'::jsonb,        -- 보스 미션 진행상태 { ogre:'active'|'done', ... }
   x           double precision not null default 0,        -- 마지막 위치
   y           double precision not null default 0,
   updated_at  timestamptz not null default now()
 );
+
+-- 기존 테이블에 missions 열이 없으면 추가(이미 테이블을 만든 경우 이 한 줄만 실행해도 됨)
+alter table public.characters add column if not exists missions jsonb not null default '{}'::jsonb;
 
 -- RLS 활성화: 정책을 하나도 두지 않으므로 anon/public 키로는 어떤 행도 읽거나 쓸 수 없습니다.
 -- 서버가 쓰는 service_role 키는 RLS를 우회하므로 정상 동작합니다(키는 절대 클라이언트에 노출 금지).

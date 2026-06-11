@@ -35,6 +35,7 @@ const PLAYER_SPEED = 170;
 const ATTACK_CD = 600;
 const MONSTER_COUNT = 24;
 const SOUL_PRIORITY_MS = 5000;
+const TRADE_RANGE = 100;       // 거래 신청/수락 허용 거리
 const DEATH_MS = 440;          // 몬스터 사망 연출 동안 잔존 (추가 타격 불가). client.html의 DEATH_MS는 이보다 작아야 연출이 제거 전에 끝난다
 const REGEN_HP = 2.4;
 const REGEN_MP = 1.6;
@@ -77,6 +78,26 @@ const START_GEAR = { weapon:'scythe', body:'hemprobe', feet:'straw', head:null }
 const SHOP_KEYS = Object.keys(EQUIP).filter(k => EQUIP[k].src === 'shop');
 const COMMON_DROPS = SHOP_KEYS.filter(k => !EQUIP[k].job);   // 직업 무관 (잡몹 저확률 드랍)
 const BOSS_DROPS   = SHOP_KEYS.filter(k =>  EQUIP[k].job);   // 직업 상위 장비 (보스 드랍)
+
+// ---------- 보스(고정 구역·리스폰) + 미션 정의 (데이터로 분리 — 보스 추가가 쉽게) ----------
+// 월드 고정 위치에 실존, 모두에게 보이고 누구나 공격 가능. 일반 몹보다 크고 강하며 체력 많음.
+const BOSS_DEFS = {
+  ogre:    { name:'붉은 도깨비', x:1300, y:300, hp:1000, atk:26, size:26, color:'#a3402f', soulDrop:120, xp:160, respawnMs:120000 },
+  serpent: { name:'구렁이 王',   x:300,  y:340, hp:2000, atk:40, size:31, color:'#3a7a4a', soulDrop:240, xp:320, respawnMs:150000 },
+  oni:     { name:'대오니 鬼神', x:820,  y:150, hp:3400, atk:56, size:37, color:'#7a3a8a', soulDrop:420, xp:640, respawnMs:180000 },
+};
+// 미션: 해당 레벨 도달 시 발생. 보스 처치 '기여(피해 기록)'가 있으면 완료(막타 무관). 보상=혼 대량 + 구간 장비.
+const MISSIONS = [
+  { key:'ogre',    boss:'ogre',    reqLevel:10, name:'붉은 도깨비', hint:'북동쪽',   soul:200, gear:{ warrior:['hwando'], onmyoji:['talisman'], archer:['longbow'], any:['bspear'] } },
+  { key:'serpent', boss:'serpent', reqLevel:15, name:'구렁이 王',   hint:'북서쪽',   soul:450, gear:{ warrior:['armor'],  onmyoji:['dopo'],     archer:['leatherrobe'], any:['leathervest'] } },
+  { key:'oni',     boss:'oni',     reqLevel:20, name:'대오니 鬼神', hint:'북쪽 중앙', soul:900, gear:{ warrior:['armor','hwando'], onmyoji:['dopo','talisman'], archer:['leatherrobe','longbow'], any:['sakkat'] } },
+];
+const MISSION_DEFS_CLIENT = MISSIONS.map(m => ({ key:m.key, name:m.name, reqLevel:m.reqLevel, soul:m.soul, hint:m.hint }));
+function ensureMissions(p){   // 도달 레벨의 미션을 활성화(중복 없이) — 새로 켜진 정의 배열 반환
+  const added = [];
+  for(const md of MISSIONS){ if(p.level >= md.reqLevel && !p.missions[md.key]){ p.missions[md.key] = 'active'; added.push(md); } }
+  return added;
+}
 
 // 안전한 장비 조회: 클라가 보낸 키가 EQUIP 고유 키일 때만 반환 (프로토타입 키 'constructor' 등 차단)
 function eqOf(k){ return (typeof k === 'string' && Object.prototype.hasOwnProperty.call(EQUIP, k)) ? EQUIP[k] : null; }
@@ -134,7 +155,7 @@ function makeNewChar(ws, name, pwhash){
   return { ws, name, pw: pwhash, ...baseRuntime(),
     x: s.x, y: s.y,
     hp: 60, maxHp: 60, mp: 30, maxMp: 30, atk: 7, range: 34, speed: PLAYER_SPEED,
-    level: 1, exp: 0, soul: 0, job: null,
+    level: 1, exp: 0, soul: 0, job: null, missions: {},
     inv: new Set(['scythe','hemprobe','straw']),
     equip: { ...START_GEAR } };
 }
@@ -145,13 +166,17 @@ function makeCharFromRow(ws, row){
   const src = (row.equip && typeof row.equip === 'object' && !Array.isArray(row.equip)) ? row.equip : START_GEAR;
   for(const s of SLOTS){ const k = src[s]; if(typeof k === 'string' && eqOf(k) && EQUIP[k].slot === s) equip[s] = k; }
   const inv = Array.isArray(row.inv) ? row.inv.filter(k => typeof k === 'string' && eqOf(k)) : ['scythe','hemprobe','straw'];
+  const missions = {};   // 알려진 미션 키 + 유효 상태만 채택
+  if(row.missions && typeof row.missions === 'object' && !Array.isArray(row.missions)){
+    for(const md of MISSIONS){ const v = row.missions[md.key]; if(v === 'active' || v === 'done') missions[md.key] = v; }
+  }
   let x = num(row.x, NaN), y = num(row.y, NaN);
   if(!Number.isFinite(x) || !Number.isFinite(y) || (x === 0 && y === 0)){ const s = spawnPos(); x = s.x; y = s.y; }
   x = Math.max(20, Math.min(WORLD-20, x)); y = Math.max(20, Math.min(WORLD-20, y));
   const p = { ws, name: row.name, pw: row.pw, ...baseRuntime(),
     x, y,
     maxHp: num(row.maxhp, 60), maxMp: num(row.maxmp, 30), atk: num(row.atk, 7),
-    level: num(row.level, 1), exp: num(row.exp, 0), soul: num(row.soul, 0), job: row.job || null,
+    level: num(row.level, 1), exp: num(row.exp, 0), soul: num(row.soul, 0), job: row.job || null, missions,
     inv: new Set(inv), equip };
   applyJobDerived(p);
   p.hp = Math.max(1, Math.min(p.maxHp, num(row.hp, p.maxHp)));   // 범위 보정(살아있게)
@@ -167,7 +192,7 @@ function rowOf(p){   // 저장용(비밀번호 제외 — pw는 별도 처리)
     level: p.level, exp: Math.round(p.exp), soul: Math.round(p.soul),
     hp: Math.max(1, Math.round(p.hp)), mp: Math.max(0, Math.round(p.mp)),   // 죽은 상태(<=0)로 저장돼 부활 악용되지 않게 최소 1
     maxhp: p.maxHp, maxmp: p.maxMp, atk: p.atk,
-    job: p.job, equip: p.equip, inv: [...p.inv],
+    job: p.job, equip: p.equip, inv: [...p.inv], missions: p.missions,
     x: Math.round(p.x), y: Math.round(p.y),
     updated_at: new Date().toISOString(),
   };
@@ -197,18 +222,18 @@ function spawnMonster(){
     damage: new Map(), lastHitAt: 0, dying: false, dieAt: 0,
   });
 }
-function spawnBoss(){
-  // 보스(鬼將)는 마을 반대편(북쪽)을 배회한다
+function spawnMissionBoss(key){
+  const d = BOSS_DEFS[key]; if(!d) return;
   monsters.set(nid('m'), {
-    x: 200 + rnd(WORLD-400), y: 120 + rnd(360),
-    tier: 4, boss: true,
-    hp: 340, maxHp: 340, atk: 21,
+    x: d.x, y: d.y, homeX: d.x, homeY: d.y,
+    tier: 4, boss: true, bossKey: key, name: d.name, color: d.color, r: d.size,
+    hp: d.hp, maxHp: d.hp, atk: d.atk, soulDrop: d.soulDrop, xp: d.xp, respawnMs: d.respawnMs,
     wander: rnd(Math.PI*2), aggroId: null,
     damage: new Map(), lastHitAt: 0, dying: false, dieAt: 0,
   });
 }
 for(let i=0;i<MONSTER_COUNT;i++) spawnMonster();
-spawnBoss();
+for(const k of Object.keys(BOSS_DEFS)) spawnMissionBoss(k);
 
 // ---------- WebSocket: 같은 서버에 부착 ----------
 const wss = new WebSocketServer({ server: httpServer });
@@ -250,9 +275,11 @@ wss.on('connection', (ws) => {
         }
         if(ws.readyState !== ws.OPEN || players.has(id)) return;   // 최종 확인(연결 끊김/중복)
         players.set(id, p);
+        const addedM = ensureMissions(p);   // 불러온 캐릭터가 이미 도달한 미션을 활성화(패널에 표시됨)
         ws.send(JSON.stringify({ t:'welcome', id, world: WORLD,
-          village: VILLAGE, equipDefs: EQUIP, shop: SHOP_KEYS }));
+          village: VILLAGE, equipDefs: EQUIP, shop: SHOP_KEYS, missionDefs: MISSION_DEFS_CLIENT }));
         sendSelf(p);
+        if(addedM.length) saveChar(p);   // 새로 활성화된 미션 즉시 저장
         if(p.level >= 5 && !p.job){ p.jobOffered = true; send(ws, { t:'canjob' }); }   // 이미 전직 자격이면 안내
       } finally {
         joining.delete(name);   // 이름 예약 해제(성공/실패 무관)
@@ -310,6 +337,7 @@ wss.on('connection', (ws) => {
       }
     }
     if(m.t === 'equip'){
+      if(p.trade){ send(p.ws,{t:'msg',k:'b',text:'거래 중에는 장비를 바꿀 수 없다'}); return; }
       const key = m.key, it = eqOf(key);
       if(it && p.inv.has(key) && (!it.job || it.job === p.job)){   // 직업 제한 장비는 해당 직업만
         p.equip[it.slot] = key;
@@ -317,12 +345,14 @@ wss.on('connection', (ws) => {
       }
     }
     if(m.t === 'unequip'){
+      if(p.trade){ send(p.ws,{t:'msg',k:'b',text:'거래 중에는 장비를 바꿀 수 없다'}); return; }
       if(SLOTS.includes(m.slot) && p.equip[m.slot]){
         p.equip[m.slot] = null;
         sendSelf(p);
       }
     }
     if(m.t === 'buy'){
+      if(p.trade){ send(p.ws,{t:'msg',k:'b',text:'거래 중에는 구매할 수 없다'}); return; }
       const key = m.key, it = eqOf(key);
       if(!it || it.src !== 'shop') return;
       if(it.job && it.job !== p.job){ send(p.ws,{t:'msg',k:'b',text:'직업에 맞지 않는 장비다'}); return; }
@@ -349,10 +379,57 @@ wss.on('connection', (ws) => {
         saveChar(p);   // 전직 직후 저장
       }
     }
+
+    // ===== 거래(서버 원자 처리) =====
+    if(m.t === 'trade_req'){
+      if(p.trade){ send(p.ws,{t:'msg',k:'b',text:'이미 거래 중이다'}); return; }
+      const tp = players.get(m.id);
+      if(!tp || tp === p) return;
+      if(tp.trade){ send(p.ws,{t:'msg',k:'b',text:'상대가 거래 중이다'}); return; }
+      if(p.respawnAt > Date.now() || tp.respawnAt > Date.now()) return;
+      if(dist(p, tp) > TRADE_RANGE){ send(p.ws,{t:'msg',k:'b',text:'거래하려면 더 가까이 가라'}); return; }
+      tp._invite = { from: id, at: Date.now() };
+      send(tp.ws, { t:'trade_invite', from: id, name: p.name });
+      send(p.ws, { t:'msg', k:'g', text:`${tp.name}에게 거래를 청했다` });
+    }
+    if(m.t === 'trade_decline'){
+      if(p._invite && p._invite.from === m.id){ const fp = players.get(m.id); p._invite = null; if(fp) send(fp.ws,{t:'msg',k:'b',text:`${p.name}이(가) 거래를 거절했다`}); }
+    }
+    if(m.t === 'trade_accept'){
+      if(!p._invite || p._invite.from !== m.id || Date.now() - p._invite.at > 30000){ p._invite = null; return; }
+      const fp = players.get(m.id); p._invite = null;
+      if(!fp || fp.trade || p.trade){ send(p.ws,{t:'msg',k:'b',text:'거래를 시작할 수 없다'}); return; }
+      if(dist(p, fp) > TRADE_RANGE){ send(p.ws,{t:'msg',k:'b',text:'상대가 너무 멀다'}); return; }
+      const trade = { a: m.id, b: id, offerA:{soul:0,items:[]}, offerB:{soul:0,items:[]}, confA:false, confB:false, done:false };
+      fp.trade = trade; p.trade = trade;
+      send(fp.ws, { t:'trade_open', withName: p.name });
+      send(p.ws,  { t:'trade_open', withName: fp.name });
+      sendTradeState(trade);
+    }
+    if(m.t === 'trade_offer'){
+      const trade = p.trade; if(!trade || trade.done) return;
+      const mine = (trade.a === id) ? trade.offerA : trade.offerB;
+      const partner = players.get(trade.a === id ? trade.b : trade.a);
+      // 내 소유 + 상대가 아직 안 가진 것만 (상대가 이미 가진 키를 건네면 소멸하므로 제외)
+      const items = Array.isArray(m.items) ? [...new Set(m.items.filter(k => typeof k === 'string' && p.inv.has(k) && !(partner && partner.inv.has(k))))].slice(0,12) : [];
+      let soul = Math.floor(num(m.soul, 0)); if(!(soul >= 0)) soul = 0; if(soul > p.soul) soul = p.soul;
+      mine.soul = soul; mine.items = items;
+      trade.confA = false; trade.confB = false;   // 제안이 바뀌면 양쪽 확정 해제(스캠 방지)
+      sendTradeState(trade);
+    }
+    if(m.t === 'trade_confirm'){
+      const trade = p.trade; if(!trade || trade.done) return;
+      if(trade.a === id) trade.confA = true; else trade.confB = true;
+      sendTradeState(trade);
+      if(trade.confA && trade.confB) executeTrade(trade);   // 둘 다 확정 시에만 원자 체결
+    }
+    if(m.t === 'trade_cancel'){
+      if(p.trade) cancelTrade(p.trade, '거래가 취소되었다');
+    }
   });
   ws.on('close', () => {
     const p = players.get(id);
-    if(p) saveChar(p);   // 접속 종료 시 저장
+    if(p){ if(p.trade) cancelTrade(p.trade, '상대가 접속을 종료했다'); saveChar(p); }   // 거래 취소 + 종료 저장
     players.delete(id);
     // 떠난 자의 흔적 정리: 어그로/기여도에 남은 id를 지워 전리품이 유령 주인에게 묶이지 않게 한다
     for(const mo of monsters.values()){ mo.damage.delete(id); if(mo.aggroId === id) mo.aggroId = null; }
@@ -366,7 +443,52 @@ function broadcast(obj){ const s = JSON.stringify(obj); for(const p of players.v
 function sendSelf(p){
   send(p.ws, { t:'self', atk: effAtk(p), def: effDef(p),
     inv: [...p.inv], equip: p.equip, soul: p.soul,
-    job: p.job, speed: p.speed, range: p.range });
+    job: p.job, speed: p.speed, range: p.range, missions: p.missions });
+}
+
+// ---------- 거래: 상태 송신 / 취소 / 검증 / 원자 체결 ----------
+function offerView(offer, conf, name){ const v = { soul: offer.soul, items: offer.items.slice(), confirmed: conf }; if(name !== undefined) v.name = name; return v; }
+function sendTradeState(trade){
+  const A = players.get(trade.a), B = players.get(trade.b);
+  if(A) send(A.ws, { t:'trade_state', mine: offerView(trade.offerA, trade.confA), theirs: offerView(trade.offerB, trade.confB, B ? B.name : '') });
+  if(B) send(B.ws, { t:'trade_state', mine: offerView(trade.offerB, trade.confB), theirs: offerView(trade.offerA, trade.confA, A ? A.name : '') });
+}
+function cancelTrade(trade, reason){
+  if(!trade) return;
+  const A = players.get(trade.a), B = players.get(trade.b);
+  if(A && A.trade === trade){ A.trade = null; send(A.ws, { t:'trade_cancel', reason }); }
+  if(B && B.trade === trade){ B.trade = null; send(B.ws, { t:'trade_cancel', reason }); }
+}
+function validOffer(p, offer){   // 체결 직전 재검증: 혼/아이템을 실제로 보유하는가
+  if(!Number.isInteger(offer.soul) || offer.soul < 0 || offer.soul > p.soul) return false;
+  for(const k of offer.items){ if(!p.inv.has(k)) return false; }
+  return true;
+}
+function executeTrade(trade){
+  if(trade.done) return;   // 중복/재전송 체결 차단
+  const A = players.get(trade.a), B = players.get(trade.b);
+  if(!A || !B){ cancelTrade(trade, '상대가 사라졌다'); return; }
+  if(A.trade !== trade || B.trade !== trade){ cancelTrade(trade, '거래가 무산됐다'); return; }   // 포인터 정합성(방어)
+  if(!validOffer(A, trade.offerA) || !validOffer(B, trade.offerB)){ cancelTrade(trade, '물품이 바뀌어 거래가 무산됐다'); return; }
+  // 받는 쪽이 이미 가진 물품(같은 키)은 건넬 수 없다 — 건네면 Set 특성상 한쪽 물품이 소멸한다
+  for(const k of trade.offerA.items){ if(B.inv.has(k)){ cancelTrade(trade, '상대가 이미 지닌 물품은 건넬 수 없다'); return; } }
+  for(const k of trade.offerB.items){ if(A.inv.has(k)){ cancelTrade(trade, '상대가 이미 지닌 물품은 건넬 수 없다'); return; } }
+  trade.done = true;   // 검증 통과 후 잠금 — 이 지점부터 동기적·원자적으로 양도(중간 await 없음 = 부분 상태 불가능)
+  const give = (from, to, offer) => {
+    from.soul -= offer.soul; to.soul += offer.soul;
+    for(const k of offer.items){
+      from.inv.delete(k);
+      for(const s of SLOTS){ if(from.equip[s] === k) from.equip[s] = null; }   // 넘긴 장비가 착용 중이면 해제
+      to.inv.add(k);
+    }
+  };
+  give(A, B, trade.offerA);
+  give(B, A, trade.offerB);
+  A.trade = null; B.trade = null;
+  send(A.ws, { t:'trade_done' }); send(B.ws, { t:'trade_done' });
+  send(A.ws, { t:'msg', k:'g', text:'거래 성사' }); send(B.ws, { t:'msg', k:'g', text:'거래 성사' });
+  sendSelf(A); sendSelf(B);
+  saveChar(A); saveChar(B);   // 체결 즉시 양쪽 DB 저장
 }
 
 // 레벨이 오를수록 가파른 곡선 (예전 level*12 → 너무 빨랐다)
@@ -386,7 +508,12 @@ function grantExp(p, pid, n){
     send(p.ws, { t:'msg', k:'g', text:`기량이 올랐다 — Lv ${p.level}` });
     broadcast({ t:'fx', kind:'levelup', id: pid, level: p.level });
   }
-  if(leveled){ sendSelf(p); saveChar(p); }   // 기본 공격력 갱신 + 레벨업 직후 저장
+  if(leveled){
+    const added = ensureMissions(p);   // 레벨 10/15/20 도달 시 해당 보스 미션 발생
+    for(const md of added){ send(p.ws, { t:'mission', kind:'new', key:md.key, name:md.name, reqLevel:md.reqLevel,
+      text:`[미션] ${md.name} 토벌 — ${md.hint} 구역의 보스를 처치하라` }); }
+    sendSelf(p); saveChar(p);   // 능력치/미션 갱신 + 저장
+  }
   if(p.level >= 5 && !p.job && !p.jobOffered){ p.jobOffered = true; send(p.ws, { t:'canjob' }); }   // 전직 안내(1회)
 }
 
@@ -446,8 +573,9 @@ setInterval(() => {
     const tgt = mo.aggroId ? players.get(mo.aggroId) : null;
     if(tgt && !tgt.respawnAt){
       const d = dist(mo, tgt);
-      const reach = mo.boss ? 30 : 22;
-      if(d > 600 || dist(tgt, VILLAGE) < VILLAGE.r){ mo.aggroId = null; }   // 마을로 달아나면 추격 포기 (안전지대)
+      const reach = mo.boss ? (mo.r ? mo.r + 8 : 30) : 22;   // 큰 보스는 조금 더 멀리서 타격
+      // 마을로 달아나거나(안전지대) 너무 멀거나, 보스가 제 구역에서 너무 벗어나면 추격 포기
+      if(d > 600 || dist(tgt, VILLAGE) < VILLAGE.r || (mo.homeX != null && Math.hypot(mo.x-mo.homeX, mo.y-mo.homeY) > 520)){ mo.aggroId = null; }
       else if(d > reach){
         const sp = (40 + mo.tier*14) * dt;
         mo.x += (tgt.x-mo.x)/d * sp; mo.y += (tgt.y-mo.y)/d * sp;
@@ -465,12 +593,17 @@ setInterval(() => {
           }
           tgt.respawnAt = now + 4000;
           send(tgt.ws, { t:'msg', k:'b', text:'쓰러졌다... 혼의 절반을 그 자리에 흘렸다 (4초 후 부활)' });
+          if(tgt.trade) cancelTrade(tgt.trade, '상대가 쓰러져 거래가 취소되었다');   // 사망 시 거래 취소
           sendSelf(tgt);   // 흘린 魂 반영
           saveChar(tgt);   // 사망 손실(혼/위치) 저장
           // 죽은 자를 쫓던 모든 요괴의 어그로를 푼다 (부활 직후 마을까지 쫓아오지 않도록)
           for(const om of monsters.values()){ if(om.aggroId === deadPid) om.aggroId = null; }
         }
       }
+    } else if(mo.homeX != null){
+      // 고정 구역 보스: 어그로가 없으면 제 자리로 천천히 복귀
+      const hd = Math.hypot(mo.x-mo.homeX, mo.y-mo.homeY);
+      if(hd > 8){ const sp=(40+mo.tier*14)*dt; mo.x += (mo.homeX-mo.x)/hd*sp; mo.y += (mo.homeY-mo.y)/hd*sp; }
     } else {
       mo.wander += (Math.random()-0.5)*0.4;
       mo.x = Math.max(30, Math.min(WORLD-30, mo.x + Math.cos(mo.wander)*18*dt));
@@ -491,7 +624,8 @@ setInterval(() => {
       level: p.level, exp: p.exp, expNeed: expNeed(p.level),
       job: p.job, dead: p.respawnAt > now })),   // job은 공개(외형). 魂/인벤은 사적 — t:self로만
     monsters: [...monsters.entries()].map(([mid,m]) => ({
-      id: mid, x: Math.round(m.x), y: Math.round(m.y), hp: m.hp, maxHp: m.maxHp, tier: m.tier, boss: !!m.boss, dying: !!m.dying })),
+      id: mid, x: Math.round(m.x), y: Math.round(m.y), hp: m.hp, maxHp: m.maxHp, tier: m.tier, boss: !!m.boss, dying: !!m.dying,
+      name: m.name || null, color: m.color || null, r: m.r || 0 })),
     souls: [...souls.entries()].map(([sid,s]) => ({
       id: sid, x: Math.round(s.x), y: Math.round(s.y), amount: s.amount,
       locked: now < s.unlockAt, ownerId: s.ownerId })),
@@ -508,9 +642,15 @@ function killMonster(mo, now){
     if(dmg > topDmg){ topDmg = dmg; topPid = pid; }
   }
 
+  // 미션 완료 판정 스냅샷: '이번 킬 이전에' 활성이던 기여자만 인정
+  // (아래 grantExp가 이 킬로 레벨업시켜 막 활성화한 미션이 같은 킬에 즉시 완료되는 것을 방지)
+  const bdef = mo.bossKey ? MISSIONS.find(x => x.boss === mo.bossKey) : null;
+  const missionActiveBefore = new Set();
+  if(bdef){ for(const pid of mo.damage.keys()){ const pl = players.get(pid); if(pl && pl.missions[bdef.key] === 'active') missionActiveBefore.add(pid); } }
+
   // 경험치 일괄 지급: 총량은 tier 비례, 접속 중 기여자에게 누적 피해 비율대로 배분.
   // 반올림 잔차는 소수부가 큰 순서로 1씩 나눠, 합계가 정확히 totalExp가 되게 한다(최대잔여법).
-  const totalExp = mo.boss ? mo.tier * 50 : mo.tier * 20;
+  const totalExp = mo.boss ? (mo.xp || mo.tier * 50) : mo.tier * 20;
   const contrib = []; let presentDmg = 0;
   for(const [pid, dmg] of mo.damage){
     const pl = players.get(pid);
@@ -525,8 +665,8 @@ function killMonster(mo, now){
     for(const c of contrib){ if(c.base > 0) grantExp(c.pl, c.pid, c.base); }
   }
 
-  const amount = mo.boss ? 70 : mo.tier * 5;
-  souls.set(nid('s'), {
+  const amount = mo.boss ? (mo.soulDrop || 70) : mo.tier * 5;
+  souls.set(nid('s'), {   // 혼 드랍: 최다 딜러 5초 우선권(기존 규칙 그대로)
     x: mo.x, y: mo.y, amount,
     ownerId: topPid,
     unlockAt: now + SOUL_PRIORITY_MS,
@@ -549,11 +689,30 @@ function killMonster(mo, now){
     if(topPid){ const tp = players.get(topPid); if(tp) send(tp.ws, { t:'msg', k:'g', text:`${EQUIP[key].name}을(를) 떨어뜨렸다!` }); }
   }
 
+  // ===== 보스 미션 완료: 피해 기여자 전원(막타 무관), 단 이번 킬 이전에 활성이던 자만 =====
+  if(bdef){
+    for(const pid of missionActiveBefore){
+      const pl = players.get(pid);
+      if(!pl || pl.missions[bdef.key] !== 'active') continue;
+      pl.missions[bdef.key] = 'done';
+      pl.soul += bdef.soul;
+      const lists = [];   // 직업 전용 → 없거나 다 가졌으면 공용에서 보충
+      if(pl.job && bdef.gear[pl.job]) lists.push(bdef.gear[pl.job]);
+      if(bdef.gear.any) lists.push(bdef.gear.any);
+      let got = null;
+      for(const list of lists){ for(const gk of list){ if(eqOf(gk) && !pl.inv.has(gk)){ pl.inv.add(gk); got = gk; break; } } if(got) break; }
+      send(pl.ws, { t:'mission', kind:'done', key:bdef.key, name:bdef.name,
+        text:`[미션 완료] ${bdef.name} 토벌! +${bdef.soul} 魂${got ? ` · ${EQUIP[got].name} 획득` : ''}` });
+      sendSelf(pl);
+      saveChar(pl);   // 미션 완료 즉시 저장
+    }
+  }
+
   // 즉시 제거하지 않고 사망 연출 동안 잔존 — 실제 제거는 틱 루프가 dieAt에 처리
   mo.dying = true;
   mo.dieAt = now + DEATH_MS;
   mo.aggroId = null;
-  if(mo.boss) setTimeout(spawnBoss, 45000);          // 보스는 처치 후 한참 뒤에 부활
+  if(mo.boss){ if(mo.bossKey) setTimeout(() => spawnMissionBoss(mo.bossKey), mo.respawnMs || 120000); }   // 고정 보스는 제 주기로 부활
   else setTimeout(spawnMonster, 3000 + rnd(4000));
 }
 
