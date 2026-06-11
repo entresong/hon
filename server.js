@@ -197,16 +197,48 @@ function rowOf(p){   // 저장용(비밀번호 제외 — pw는 별도 처리)
     updated_at: new Date().toISOString(),
   };
 }
-async function writeChar(p){   // 실제 기록(upsert): 행이 없어도 복구 생성, pw 보존
-  const { error } = await supabase.from('characters').upsert({ ...rowOf(p), pw: p.pw }, { onConflict: 'name' });
-  if(error) throw error;
+// ---------- DB 기록: 모든 호출에 에러 로깅, 성공 시 [저장] 한 줄, 스키마 미반영(missions 열 없음)에도 진행 보존 ----------
+let MISSIONS_COL = true;   // DB에 missions 열이 있는지. 없으면 제외하고 저장(예전 스키마로 만든 테이블 대비)
+function isMissingMissions(e){
+  if(!e) return false;
+  const s = `${e.code||''} ${e.message||''} ${e.details||''} ${e.hint||''}`.toLowerCase();
+  return s.includes('missions') && (s.includes('column') || s.includes('schema cache') || s.includes('does not exist') || e.code === 'PGRST204' || e.code === '42703');
 }
-async function saveChar(p){   // 캐릭터별 직렬화 + 폭주 합치기(겹치는 UPDATE의 순서 역전 방지)
+async function dbInsert(p){   // 신규 행 삽입 (pw 포함). {error} 반환
+  const ins = { ...rowOf(p), pw: p.pw };
+  if(!MISSIONS_COL) delete ins.missions;
+  let r = await supabase.from('characters').insert(ins);
+  if(r.error && MISSIONS_COL && isMissingMissions(r.error)){
+    console.warn('[魂] DB에 missions 열이 없음 — 제외하고 진행합니다. schema.sql의 ALTER 문을 실행하세요.');
+    MISSIONS_COL = false; delete ins.missions; r = await supabase.from('characters').insert(ins);
+  }
+  return r;
+}
+async function dbWrite(p){   // name 기준 update → 실제로 매칭된 행이 없으면 insert(복구). 어떤 경로였는지 반환
+  const row = rowOf(p);
+  if(!MISSIONS_COL) delete row.missions;
+  let res = await supabase.from('characters').update(row).eq('name', p.name).select('name');
+  if(res.error && MISSIONS_COL && isMissingMissions(res.error)){
+    console.warn('[魂] DB에 missions 열이 없음 — 제외하고 저장합니다. schema.sql의 ALTER 문을 실행하세요.');
+    MISSIONS_COL = false; delete row.missions;
+    res = await supabase.from('characters').update(row).eq('name', p.name).select('name');
+  }
+  if(res.error) throw res.error;
+  if(res.data && res.data.length > 0) return 'update';   // 행이 실제로 갱신됨
+  const ins = await dbInsert(p);                          // 매칭 행이 없으면 새로 만든다
+  if(ins.error) throw ins.error;
+  return 'insert(복구)';
+}
+async function persist(p){   // 1회 기록 + 성공 로그
+  const how = await dbWrite(p);
+  console.log(`[저장] ${p.name} Lv.${p.level} 魂${Math.round(p.soul)} (${how})`);
+}
+async function saveChar(p){   // 캐릭터별 직렬화 + 폭주 합치기. 실패 시 상세 에러 로깅(절대 조용히 넘기지 않음)
   if(!supabase || !p || !p.name) return;
   if(p._saving){ p._saveAgain = true; return; }
   p._saving = true;
-  try{ await writeChar(p); }
-  catch(e){ console.error('[魂] 저장 실패', p.name, e.message); }
+  try{ await persist(p); }
+  catch(e){ console.error(`[魂] 저장 실패 ${p.name}: code=${e&&e.code} msg=${e&&e.message} details=${e&&e.details} hint=${e&&e.hint}`); }
   finally{ p._saving = false; if(p._saveAgain){ p._saveAgain = false; saveChar(p); } }
 }
 
@@ -258,19 +290,23 @@ wss.on('connection', (ws) => {
             const { data, error } = await supabase.from('characters').select('*').eq('name', name).limit(1);
             if(error) throw error;
             row = (data && data[0]) ? data[0] : null;
-          }catch(e){ console.error('[魂] 불러오기 실패', name, e.message); send(ws,{t:'loginfail',reason:'저장소 오류 — 잠시 후 다시 시도'}); return; }
+          }catch(e){ console.error(`[魂] 불러오기 실패 ${name}: code=${e&&e.code} msg=${e&&e.message}`); send(ws,{t:'loginfail',reason:'저장소 오류 — 잠시 후 다시 시도'}); return; }
         }
         if(ws.readyState !== ws.OPEN || players.has(id)) return;   // await 사이 끊김
 
         let p;
         if(row){
+          // 조회 성공 → 그 값 그대로 시작 (기본값으로 덮어쓰지 않는다)
           if(!verifyPassword(pw, row.pw)){ send(ws,{t:'loginfail',reason:'비밀번호가 틀렸다'}); return; }
           p = makeCharFromRow(ws, row);
+          console.log(`[불러옴] ${name} Lv.${p.level} 魂${Math.round(p.soul)} exp${p.exp}`);
         } else {
+          // 조회 결과 없음 → 신규 생성
           p = makeNewChar(ws, name, hashPassword(pw));
           if(supabase && ws.readyState === ws.OPEN){
-            try{ const { error } = await supabase.from('characters').insert({ ...rowOf(p), pw: p.pw }); if(error) throw error; }
-            catch(e){ console.error('[魂] 생성 실패', name, e.message); send(ws,{t:'loginfail',reason:'이미 쓰이는 이름이거나 저장소 오류'}); return; }
+            const r = await dbInsert(p);
+            if(r.error){ console.error(`[魂] 생성 실패 ${name}: code=${r.error.code} msg=${r.error.message} details=${r.error.details}`); send(ws,{t:'loginfail',reason:'이미 쓰이는 이름이거나 저장소 오류'}); return; }
+            console.log(`[신규] ${name} 생성`);
           }
         }
         if(ws.readyState !== ws.OPEN || players.has(id)) return;   // 최종 확인(연결 끊김/중복)
@@ -723,7 +759,7 @@ setInterval(() => { for(const p of players.values()) saveChar(p); }, 30000);
 let shuttingDown = false;
 async function gracefulExit(){
   if(shuttingDown) return; shuttingDown = true;
-  if(supabase){ try{ await Promise.allSettled([...players.values()].map(p => writeChar(p).catch(()=>{}))); }catch(e){} }
+  if(supabase){ try{ await Promise.allSettled([...players.values()].map(p => persist(p).catch(e => console.error('[魂] 종료 저장 실패', p.name, e&&e.message)))); }catch(e){} }
   process.exit(0);
 }
 process.on('SIGTERM', gracefulExit);
