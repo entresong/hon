@@ -130,8 +130,10 @@
   <h1>魂</h1>
   <div class="tt">베어라, 거두어라, 오르라</div>
   <input id="nick" placeholder="그대의 이름" maxlength="10" />
+  <input id="pw" type="password" placeholder="비밀번호" maxlength="32" />
   <button onclick="enter()">세계에 들어선다</button>
   <div id="err"></div>
+  <div class="tt" style="margin-top:10px;letter-spacing:1px">처음이면 그대로 만들어지고, 다음엔 같은 이름·비밀번호로 불러온다</div>
 </div>
 
 <script>
@@ -140,6 +142,8 @@ function fit(){ cv.width=innerWidth*devicePixelRatio; cv.height=innerHeight*devi
   cv.style.width=innerWidth+'px'; cv.style.height=innerHeight+'px';
   ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); }
 addEventListener('resize', fit); fit();
+// 로그인: 이름/비밀번호 칸에서 Enter로 입장
+['nick','pw'].forEach(idn => { const el=document.getElementById(idn); if(el) el.addEventListener('keydown', e => { if(e.key==='Enter') enter(); }); });
 
 let ws=null, myId=null, WORLD=1600;
 let prevState=null, currState=null, currAt=0, prevAt=0;
@@ -204,17 +208,23 @@ function say(t,k){ msgEl.style.color = k==='b'?'#a83a2f':'#c9a24b'; msgEl.textCo
   clearTimeout(msgT); msgT=setTimeout(()=>msgEl.textContent='',2400); }
 
 function enter(){
+  if(ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;   // 중복 클릭/접속 방지
   initAudio();
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   const addr = proto + location.host;
-  const nick = document.getElementById('nick').value.trim() || '무명천민';
+  const nick = document.getElementById('nick').value.trim();
+  const pw = document.getElementById('pw').value;
+  if(!nick || !pw){ document.getElementById('err').textContent='이름과 비밀번호를 입력하세요.'; return; }
+  document.getElementById('err').textContent='';
   try{ ws = new WebSocket(addr); }
   catch(e){ document.getElementById('err').textContent='주소를 확인하세요.'; return; }
-  ws.onopen = () => ws.send(JSON.stringify({ t:'join', name: nick }));
+  ws.onopen = () => ws.send(JSON.stringify({ t:'join', name: nick, pw }));
   ws.onerror = () => document.getElementById('err').textContent='연결 실패 — 서버가 켜져 있나요?';
   ws.onclose = () => { if(myId) say('서버와 연결이 끊겼다', 'b'); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
+    if(m.t === 'loginfail'){ document.getElementById('err').textContent = m.reason || '입장 실패';
+      try{ ws.onclose=null; ws.close(); }catch(_){} ws=null; return; }   // 재시도 시 새 소켓 만들도록 정리
     if(m.t === 'welcome'){ myId = m.id; WORLD = m.world;
       village = m.village; equipDefs = m.equipDefs; shopKeys = m.shop;
       document.getElementById('setup').style.display='none';

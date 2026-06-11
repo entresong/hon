@@ -8,7 +8,25 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
+
+// ---------- 영속성: Supabase (서버에서만 접근, 키는 환경변수로만) ----------
+// 환경변수 SUPABASE_URL / SUPABASE_SERVICE_KEY 가 있어야 영속성이 켜진다.
+// 없으면 메모리 전용으로 동작(개발/장애 시 graceful degradation). 키는 절대 클라이언트로 보내지 않는다.
+let supabase = null;
+{
+  const url = process.env.SUPABASE_URL, key = process.env.SUPABASE_SERVICE_KEY;
+  if(url && key){
+    try{
+      const { createClient } = require('@supabase/supabase-js');
+      supabase = createClient(url, key, { auth: { persistSession:false, autoRefreshToken:false } });
+      console.log('[魂] Supabase 연결 — 캐릭터 영속성 활성화');
+    }catch(e){ console.error('[魂] Supabase 초기화 실패, 메모리 전용으로 진행:', e.message); supabase = null; }
+  } else {
+    console.warn('[魂] SUPABASE_URL/SUPABASE_SERVICE_KEY 미설정 — 메모리 전용(재시작 시 캐릭터 소멸)');
+  }
+}
 
 const PORT = process.env.PORT || 8787;
 const TICK = 50;
@@ -82,12 +100,90 @@ const players = new Map();
 const monsters = new Map();
 const souls = new Map();
 const drops = new Map();   // 땅에 떨어진 장비 전리품
+const joining = new Set(); // 입장 처리 중인 이름(동시 접속/생성 경쟁 방지)
 let nextId = 1;
 const nid = (p) => p + (nextId++);
 
 function rnd(n){ return Math.random()*n; }
 function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
 function spawnPos(){ return { x: VILLAGE.x - 60 + rnd(120), y: VILLAGE.y - 40 + rnd(80) }; }
+function nameOnline(name){ for(const pl of players.values()) if(pl.name === name) return true; return false; }
+
+// ---------- 비밀번호 해시 (salt$scrypt) ----------
+function hashPassword(pw){
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(String(pw), salt, 32).toString('hex');
+  return salt + '$' + hash;
+}
+function verifyPassword(pw, stored){
+  if(typeof stored !== 'string' || !stored.includes('$')) return false;
+  const [salt, hash] = stored.split('$');
+  let h; try{ h = crypto.scryptSync(String(pw), salt, 32).toString('hex'); }catch(e){ return false; }
+  const a = Buffer.from(h, 'hex'), b = Buffer.from(hash, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// ---------- 캐릭터 ↔ DB 매핑 ----------
+function applyJobDerived(p){   // range/speed는 직업에서 파생(저장하지 않음)
+  if(p.job && JOBS[p.job]){ p.range = JOBS[p.job].range; p.speed = JOBS[p.job].speed; }
+  else { p.range = 34; p.speed = PLAYER_SPEED; }
+}
+function baseRuntime(){ return { tx:null, ty:null, lastAtk:0, respawnAt:0, attackId:null, lastDamagedAt:0, jobOffered:false }; }
+function makeNewChar(ws, name, pwhash){
+  const s = spawnPos();
+  return { ws, name, pw: pwhash, ...baseRuntime(),
+    x: s.x, y: s.y,
+    hp: 60, maxHp: 60, mp: 30, maxMp: 30, atk: 7, range: 34, speed: PLAYER_SPEED,
+    level: 1, exp: 0, soul: 0, job: null,
+    inv: new Set(['scythe','hemprobe','straw']),
+    equip: { ...START_GEAR } };
+}
+const num = (v, d) => Number.isFinite(Number(v)) ? Number(v) : d;   // 유한수만 채택(0 보존, NULL/NaN은 기본값)
+function makeCharFromRow(ws, row){
+  // 장비: 슬롯별로 EQUIP 고유 키이고 슬롯이 맞을 때만 채택(손상/위조 행 방어)
+  const equip = { weapon:null, body:null, feet:null, head:null };
+  const src = (row.equip && typeof row.equip === 'object' && !Array.isArray(row.equip)) ? row.equip : START_GEAR;
+  for(const s of SLOTS){ const k = src[s]; if(typeof k === 'string' && eqOf(k) && EQUIP[k].slot === s) equip[s] = k; }
+  const inv = Array.isArray(row.inv) ? row.inv.filter(k => typeof k === 'string' && eqOf(k)) : ['scythe','hemprobe','straw'];
+  let x = num(row.x, NaN), y = num(row.y, NaN);
+  if(!Number.isFinite(x) || !Number.isFinite(y) || (x === 0 && y === 0)){ const s = spawnPos(); x = s.x; y = s.y; }
+  x = Math.max(20, Math.min(WORLD-20, x)); y = Math.max(20, Math.min(WORLD-20, y));
+  const p = { ws, name: row.name, pw: row.pw, ...baseRuntime(),
+    x, y,
+    maxHp: num(row.maxhp, 60), maxMp: num(row.maxmp, 30), atk: num(row.atk, 7),
+    level: num(row.level, 1), exp: num(row.exp, 0), soul: num(row.soul, 0), job: row.job || null,
+    inv: new Set(inv), equip };
+  applyJobDerived(p);
+  p.hp = Math.max(1, Math.min(p.maxHp, num(row.hp, p.maxHp)));   // 범위 보정(살아있게)
+  p.mp = Math.max(0, Math.min(p.maxMp, num(row.mp, p.maxMp)));
+  const need = expNeed(p.level);                                  // exp가 현재 레벨 요구치를 넘지 않게 정규화
+  if(p.exp >= need) p.exp = need - 1;
+  if(p.exp < 0) p.exp = 0;
+  return p;
+}
+function rowOf(p){   // 저장용(비밀번호 제외 — pw는 별도 처리)
+  return {
+    name: p.name,
+    level: p.level, exp: Math.round(p.exp), soul: Math.round(p.soul),
+    hp: Math.max(1, Math.round(p.hp)), mp: Math.max(0, Math.round(p.mp)),   // 죽은 상태(<=0)로 저장돼 부활 악용되지 않게 최소 1
+    maxhp: p.maxHp, maxmp: p.maxMp, atk: p.atk,
+    job: p.job, equip: p.equip, inv: [...p.inv],
+    x: Math.round(p.x), y: Math.round(p.y),
+    updated_at: new Date().toISOString(),
+  };
+}
+async function writeChar(p){   // 실제 기록(upsert): 행이 없어도 복구 생성, pw 보존
+  const { error } = await supabase.from('characters').upsert({ ...rowOf(p), pw: p.pw }, { onConflict: 'name' });
+  if(error) throw error;
+}
+async function saveChar(p){   // 캐릭터별 직렬화 + 폭주 합치기(겹치는 UPDATE의 순서 역전 방지)
+  if(!supabase || !p || !p.name) return;
+  if(p._saving){ p._saveAgain = true; return; }
+  p._saving = true;
+  try{ await writeChar(p); }
+  catch(e){ console.error('[魂] 저장 실패', p.name, e.message); }
+  finally{ p._saving = false; if(p._saveAgain){ p._saveAgain = false; saveChar(p); } }
+}
 
 function spawnMonster(){
   let x, y;
@@ -119,23 +215,48 @@ const wss = new WebSocketServer({ server: httpServer });
 
 wss.on('connection', (ws) => {
   const id = nid('p');
-  ws.on('message', (raw) => {
+  ws.on('message', async (raw) => {
     let m; try{ m = JSON.parse(raw); }catch(e){ return; }
 
     if(m.t === 'join'){
-      const name = String(m.name||'무명천민').slice(0,10);
-      const s = spawnPos();
-      players.set(id, { ws, name,
-        x: s.x, y: s.y, tx:null, ty:null,
-        hp: 60, maxHp: 60, mp: 30, maxMp: 30, atk: 7, range: 34, speed: PLAYER_SPEED,
-        level: 1, exp: 0, soul: 0, lastAtk: 0, respawnAt: 0, attackId: null,
-        lastDamagedAt: 0, job: null, jobOffered: false,
-        inv: new Set(['scythe','hemprobe','straw']),   // 시작 지급: 낫 + 삼베옷 + 짚신
-        equip: { ...START_GEAR } });
-      const p = players.get(id);
-      ws.send(JSON.stringify({ t:'welcome', id, world: WORLD,
-        village: VILLAGE, equipDefs: EQUIP, shop: SHOP_KEYS }));
-      sendSelf(p);
+      if(players.has(id)) return;                         // 이 연결은 이미 입장함
+      const name = String(m.name||'').trim().slice(0,10);
+      const pw = String(m.pw||'');
+      if(name.length < 1 || pw.length < 1){ send(ws,{t:'loginfail',reason:'이름과 비밀번호를 입력하라'}); return; }
+      if(pw.length > 64){ send(ws,{t:'loginfail',reason:'비밀번호가 너무 길다'}); return; }   // 과대 입력 KDF DoS 방지
+      if(nameOnline(name) || joining.has(name)){ send(ws,{t:'loginfail',reason:'이미 접속 중인 이름이다'}); return; }
+      joining.add(name);   // 처리 동안 이름 예약 → 동시 접속/생성 경쟁을 구조적으로 차단
+      try{
+        let row = null;
+        if(supabase){
+          try{
+            const { data, error } = await supabase.from('characters').select('*').eq('name', name).limit(1);
+            if(error) throw error;
+            row = (data && data[0]) ? data[0] : null;
+          }catch(e){ console.error('[魂] 불러오기 실패', name, e.message); send(ws,{t:'loginfail',reason:'저장소 오류 — 잠시 후 다시 시도'}); return; }
+        }
+        if(ws.readyState !== ws.OPEN || players.has(id)) return;   // await 사이 끊김
+
+        let p;
+        if(row){
+          if(!verifyPassword(pw, row.pw)){ send(ws,{t:'loginfail',reason:'비밀번호가 틀렸다'}); return; }
+          p = makeCharFromRow(ws, row);
+        } else {
+          p = makeNewChar(ws, name, hashPassword(pw));
+          if(supabase && ws.readyState === ws.OPEN){
+            try{ const { error } = await supabase.from('characters').insert({ ...rowOf(p), pw: p.pw }); if(error) throw error; }
+            catch(e){ console.error('[魂] 생성 실패', name, e.message); send(ws,{t:'loginfail',reason:'이미 쓰이는 이름이거나 저장소 오류'}); return; }
+          }
+        }
+        if(ws.readyState !== ws.OPEN || players.has(id)) return;   // 최종 확인(연결 끊김/중복)
+        players.set(id, p);
+        ws.send(JSON.stringify({ t:'welcome', id, world: WORLD,
+          village: VILLAGE, equipDefs: EQUIP, shop: SHOP_KEYS }));
+        sendSelf(p);
+        if(p.level >= 5 && !p.job){ p.jobOffered = true; send(ws, { t:'canjob' }); }   // 이미 전직 자격이면 안내
+      } finally {
+        joining.delete(name);   // 이름 예약 해제(성공/실패 무관)
+      }
       return;
     }
     const p = players.get(id);
@@ -162,6 +283,7 @@ wss.on('connection', (ws) => {
         souls.delete(m.id);
         send(p.ws, { t:'msg', k:'g', text:`+${amt} 魂` });
         sendSelf(p);
+        saveChar(p);   // 혼은 주요 재화 — 획득 즉시 저장(합치기됨)
       } else if(!canLoot && dist(p,s) < 40){
         send(p.ws, { t:'msg', k:'b', text:'아직 임자가 있는 혼이다 (5초 후 무주공산)' });
       }
@@ -182,6 +304,7 @@ wss.on('connection', (ws) => {
         }
         drops.delete(m.id);
         sendSelf(p);
+        saveChar(p);   // 장비 획득 직후 저장
       } else if(!canLoot && dist(p,d) < 40){
         send(p.ws, { t:'msg', k:'b', text:'아직 임자가 있는 전리품이다 (5초 후 풀린다)' });
       }
@@ -210,6 +333,7 @@ wss.on('connection', (ws) => {
       p.inv.add(key);
       send(p.ws,{t:'msg',k:'g',text:`${it.name} 구입 (-${it.price} 魂)`});
       sendSelf(p);
+      saveChar(p);   // 구매 직후 저장
     }
     if(m.t === 'job'){
       // 레벨 5 이상·미전직만 1회 전직. 서버가 직업 보너스를 적용 (m.job은 고유 키만 허용)
@@ -222,10 +346,13 @@ wss.on('connection', (ws) => {
         send(p.ws, { t:'msg', k:'g', text:`${J.name}(으)로 전직했다` });
         broadcast({ t:'fx', kind:'levelup', id, level: p.level });   // 전직 연출(반짝) 재사용
         sendSelf(p);
+        saveChar(p);   // 전직 직후 저장
       }
     }
   });
   ws.on('close', () => {
+    const p = players.get(id);
+    if(p) saveChar(p);   // 접속 종료 시 저장
     players.delete(id);
     // 떠난 자의 흔적 정리: 어그로/기여도에 남은 id를 지워 전리품이 유령 주인에게 묶이지 않게 한다
     for(const mo of monsters.values()){ mo.damage.delete(id); if(mo.aggroId === id) mo.aggroId = null; }
@@ -259,7 +386,7 @@ function grantExp(p, pid, n){
     send(p.ws, { t:'msg', k:'g', text:`기량이 올랐다 — Lv ${p.level}` });
     broadcast({ t:'fx', kind:'levelup', id: pid, level: p.level });
   }
-  if(leveled) sendSelf(p);   // 기본 공격력이 올랐으니 실효치 갱신
+  if(leveled){ sendSelf(p); saveChar(p); }   // 기본 공격력 갱신 + 레벨업 직후 저장
   if(p.level >= 5 && !p.job && !p.jobOffered){ p.jobOffered = true; send(p.ws, { t:'canjob' }); }   // 전직 안내(1회)
 }
 
@@ -339,6 +466,7 @@ setInterval(() => {
           tgt.respawnAt = now + 4000;
           send(tgt.ws, { t:'msg', k:'b', text:'쓰러졌다... 혼의 절반을 그 자리에 흘렸다 (4초 후 부활)' });
           sendSelf(tgt);   // 흘린 魂 반영
+          saveChar(tgt);   // 사망 손실(혼/위치) 저장
           // 죽은 자를 쫓던 모든 요괴의 어그로를 푼다 (부활 직후 마을까지 쫓아오지 않도록)
           for(const om of monsters.values()){ if(om.aggroId === deadPid) om.aggroId = null; }
         }
@@ -428,5 +556,18 @@ function killMonster(mo, now){
   if(mo.boss) setTimeout(spawnBoss, 45000);          // 보스는 처치 후 한참 뒤에 부활
   else setTimeout(spawnMonster, 3000 + rnd(4000));
 }
+
+// ---------- 30초마다 접속자 전원 자동 저장 ----------
+setInterval(() => { for(const p of players.values()) saveChar(p); }, 30000);
+
+// 종료 신호 시 전원 저장 후 종료 (Railway 재배포/스케일다운 대비)
+let shuttingDown = false;
+async function gracefulExit(){
+  if(shuttingDown) return; shuttingDown = true;
+  if(supabase){ try{ await Promise.allSettled([...players.values()].map(p => writeChar(p).catch(()=>{}))); }catch(e){} }
+  process.exit(0);
+}
+process.on('SIGTERM', gracefulExit);
+process.on('SIGINT', gracefulExit);
 
 httpServer.listen(PORT, () => console.log(`[魂] 세계 가동 — http://localhost:${PORT}`));
